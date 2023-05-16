@@ -1,7 +1,7 @@
 ---
-title: "XenopusAnalysis"
-author: "J Diaz"
-date: "2022-09-29"
+title: "XD Analysis"
+author: "Jess Diaz"
+date: "2023-05-09"
 output:
   html_document:
     toc: true
@@ -13,280 +13,112 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
-library(tibble)
-library(phyloseq)
-library(readxl)
+library(qiime2R)
+library(microbiome)
+library(dplyr)
+library(ggplot2)
 library(vegan)
+library(decontam)
+library(phyloseq)
+source("HighstatLibV10.R")
 
 theme_set(theme_light())
 c = scale_color_manual(values = c("black", "deepskyblue", "red"))
 ```
 
-# Explore and Load Files
+## Setup
 
-## Rundown of Mauna's DADA2 pipeline:\
-Code in DADA2Pipeline.Rmd
-1. Downloaded seq files and extracted sample names\
-2. Plotted quality profiles and filtered reads\
-3. Trimmed reads and learn errors\
-4. DADA and merged paired reads to make seqtab\
-5. Removed chimeras and assigned taxonomy (SILVA)\
-6. Made tables\
-    * ASVTable : rows are sample names, columns are ASVs (headers are seqs not ASV#). extra column for sample name\
-    * TaxonomyTable : rows are ASVs (headers are seqs not ASV#), columns are tsxonomy. extra column for ASV seq\
-7. From tax table filtered out chloroplasts, mitrochondria, archaea\
-    * _TaxonomyTable_namedASVS : adds column for ASV# to the table in addition to filtering (sequential after filtering)_\
-8. From ASV counts table removes singletons\
-    * ASVTable_filt_transposed_nosingletons : adds column for ASV# in addition to filtering for singletons\
-    * _ASVTable_filt_clean_nosingletons : clean counts table. sample names as rows and ASV# as columns_\
+```{r create phyloseq object, include = FALSE}
+# create master phyloseq
+XD <-qza_to_phyloseq(
+  features="table-filt-bytaxa.qza",
+  tree="rooted-tree.qza",
+  taxonomy="taxonomy.qza",
+  metadata = "XD_qiime_metadata.txt"
+)
 
-```{r tax table, include = FALSE}
-setwd("~/Kohl Lab/Xenopus Development/XenopusDevelopment-RProjectFiles/1_data/out")
-
-#ASVTable <- readRDS("ASVTable.rds")
-#ASVTable_filt_transposed_nosingletons <- readRDS("ASVTable_filt_transposed_nosingletons.rds")
-#ASVTable_filt_clean_nosingletons <- readRDS("ASVTable_filt_clean_nosingletons.rds")
-
-#TaxonomyTable <- readRDS("TaxonomyTable.rds")
-TaxonomyTable_namedASVs <- readRDS("TaxonomyTable_namedASVs.rds") %>% 
-  remove_rownames() %>% 
-  select(-ASV) %>% 
-  column_to_rownames("ASV_ID")
+# sum contrasts for categorical variables
+sample_data(XD)$tank.id <- C(factor(sample_data(XD)$tank.id), sum)
+sample_data(XD)$treatment <- C(factor(sample_data(XD)$treatment), sum)
 ```
 
-## File cleanup
+## Data Cleanup and Exploration
 
-Fixed errors due to some samples being re-sequenced and some samples not being submitted for sequencing.\
+```{r data summary, echo = FALSE}
+# data summaries
+summarize_phyloseq(XD)
+```
+First I will run decontam using the 12 kit control samples as the negative controls.
 
-```{r fixing metadata, include = FALSE}
-setwd("~/Kohl Lab/Xenopus Development/XenopusDevelopment-RProjectFiles/")
+```{r decontam, echo = FALSE}
+# make new variable where controls are "TRUE"
+sample_data(XD)$is.neg <- sample_data(XD)$sample.type == "Blank"
 
-# Used Mauna's code on the MARS submission file instead of the platemap because there were extra samples there
-MappingFile <- read_excel("MARS_SampleSubmissionKohl1220.xlsx", sheet = "Samples for Sequencing") %>%
-  select(Sample_Name, Plate_Name, Sample_Source, DNA_Well_Position, "DNA_ng/ul") %>% 
-  filter(grepl("^[XEN,1-9]+", Sample_Name)) %>% 
-  mutate(PlateLoc=paste(Plate_Name, DNA_Well_Position, sep = "")) %>%
-  mutate(PlateLoc=gsub("Kohl1220", "", PlateLoc),
-         Sample_Name=gsub("XEN", "", Sample_Name)) %>%
-  select(-Plate_Name, -DNA_Well_Position) %>%
-  filter(!grepl("KC", Sample_Name))
+# run decontam
+contamdf.prevalence <- isContaminant(XD, method="prevalence", neg="is.neg", threshold=0.5)
 
-not_sequenced <- c("C7", "C20")
-Metadata <- read_csv("1_data/in/Xenopus_Thyroxine_metadata_full.csv", show_col_types = F) %>%
-  filter(!(Tadpole_ID %in% not_sequenced)) %>%
-  select(-Spawning) %>% 
-  rename(Sample_Name = Tadpole_ID)
+# identify which taxa are contaminants
+table(contamdf.prevalence$contaminant)
+contams <- which(contamdf.prevalence$contaminant)
 
-MasterMetadata <- MappingFile %>% 
-  left_join(Metadata, by = "Sample_Name") %>% 
-  mutate(Treatment = recode(Treatment, L = "Thyroxine", X = "Delayed Thyroxine", C = "Control"))
+# list contaminants
+tax <- as(tax_table(XD), "matrix")
+tax[contams,]
 
-samplemap <- MasterMetadata %>% 
-  select(Sample_Name, Sample_Source, PlateLoc)
+# remove taxa from phyloseq
+XD.decontam <- prune_taxa(!contamdf.prevalence$contaminant, XD)
 ```
 
-```{r ASV table, include = FALSE}
-# Mauna's code: adds 3 columns to ASV table: PlateLoc, SampleNo, and readcount
-# Break apart the sample IDs
-# Jess's edit: remove the low readcount samples that were re-run
-samp_to_remove <- c("S103", "S216", "S272", "S217", "S218", "S242", "S219", "S221", "S222", "S278", "S215", "S223", "S57")
+24 taxa were identified as contaminants using a threshold where the taxa have to be more prevalent in the negatives than in the samples. I have removed these taxa from analysis.
 
-ASVtab<-readRDS("../../1_data/out/ASVTable_filt_clean_nosingletons.rds") %>% 
-  column_to_rownames("Unique_ID") %>% 
-  mutate_if(is.character,as.numeric) %>% 
-  mutate(readcount=rowSums(.,na.rm=F)) %>% 
-  rownames_to_column("Unique_ID") %>% 
-  mutate(PlateLoc=Unique_ID,
-         SampleNo=Unique_ID)  %>% 
-  mutate(SampleNo=substring(SampleNo, regexpr("S[0-9]+_",SampleNo)),
-         PlateLoc=substring(PlateLoc, regexpr("Plate[A-Z0-9]+",PlateLoc))) %>% 
-  mutate(SampleNo=gsub("_\\w\\d*","",SampleNo),
-         PlateLoc=gsub("_\\w\\d*","",PlateLoc)) %>% 
-  filter(!(SampleNo %in% samp_to_remove)) %>% 
-  left_join(samplemap, by = "PlateLoc") %>% 
-  relocate(Unique_ID, Sample_Name, PlateLoc, SampleNo, Sample_Source, readcount) %>% 
-  filter(Sample_Source == "Gut")
-ASVtab_clean <- ASVtab %>% 
-  select(-Unique_ID, -PlateLoc, -SampleNo, -Sample_Source, -readcount) %>% 
-  column_to_rownames("Sample_Name")
-readcounts <- ASVtab %>% 
-  select(PlateLoc, readcount)
+Now I can look at the read counts to see how many reads are in each sample.
+```{r}
+sample_sums(XD.decontam)
+```
+Based on the read counts, I will rarefy at 3638 to retain all data points except the five that had fewer reads. Blanks should be automatically removed with the rarefaction.
 
-ASV_names <- colnames(ASVtab_clean)
-TaxonomyTable_filtered <- TaxonomyTable_namedASVs %>% 
-  filter(row.names(TaxonomyTable_namedASVs) %in% ASV_names)
-
-MasterMetadata <- MasterMetadata %>% 
-  left_join(readcounts, by = "PlateLoc") %>% 
-  mutate(Sample_Name2 = Sample_Name) %>% 
-  column_to_rownames("Sample_Name2")
+```{r rarefy, include=FALSE}
+XD.rare <- rarefy_even_depth(XD.decontam, sample.size=3638, rngseed=14, verbose=TRUE) # rarefy
+```
+I also need to remove the samples that were allowed to metamorphose.
+```{r}
+# remove samples that were allowed to metamorphose
+XD.rare <- subset_samples(XD.rare, age.days <= 100)
 ```
 
-
-From here will use ASVtab_clean and MasterMetadata, which together should contain all relevant information.\
-
-
-```{r phyloseq, include = FALSE}
-ASV = otu_table(as.matrix(ASVtab_clean), taxa_are_rows = FALSE)
-TAX = tax_table(as.matrix(TaxonomyTable_filtered))
-META = sample_data(MasterMetadata)
-
-XEN <- phyloseq(ASV, TAX, META) %>% 
-  subset_samples(Age_days <= 100) %>% 
-  subset_samples(readcount >= 3835) %>% 
-  rarefy_even_depth(sample.size = 3835, rngseed = 4, replace = FALSE)
-```
 ## Exploring Metadata
 
-Age vs stage\
-Treatment with thyroxine caused increased development (higher stage at a given age) **back up with stats**\
+```{r}
+# isolate metadata for ggplot
+meta.rare <- meta(XD.rare)
+```
+
+First I want to make the age/stage plot, colored by treatment group.
 ```{r Age vs Stage, echo = FALSE}
-MasterMetadata %>% 
-  filter(Age_days <= 100) %>% 
-  ggplot(aes(x = Age_days, y = Stage, color = Treatment)) +
+meta.rare %>% 
+  ggplot(aes(x = age.days, y = stage, color = treatment)) +
   geom_point(size = 3, shape = 16) +
-  stat_summary(geom = "line", fun.y = mean, size = 1.5) +
+  stat_summary(geom = "line", fun = mean, linewidth = 1.5) +
   labs(x = "Age (days)", y = "Developmental Stage") +
   c
 ```
 
-Body length and mass\
-Body length positively correlates with mass (duh), but interestingly the thyroxine group does not have any samples in the upper part of the line, suggesting the treatment stunted growth.\
-```{r growth, echo = FALSE}
-MasterMetadata %>% 
-  filter(Age_days <= 100) %>% 
-  ggplot(aes(x = BL_mm, y = Mass_g)) +
-  geom_point(size = 3, aes(color = Treatment)) + c +
-  labs(x = "Body length (mm)", y = "Mass (g)")
-
-MasterMetadata %>% 
-  filter(Age_days <= 100) %>% 
-  ggplot(aes(x = Age_days, y = Mass_g, color = Treatment)) +
-  geom_point(size = 3) + c +
-  geom_smooth(method="lm") +
-  labs(x = "Age (days)", y = "Mass (g)")
-
-# MasterMetadata %>% 
-#   filter(Age_days <= 100) %>% 
-#   ggplot(aes(x = Age_days, y = BL_mm, color = Treatment)) +
-#   geom_point() +
-#   geom_smooth(method="lm")
-# 
-# MasterMetadata %>%
-#   filter(Age_days <= 100) %>%
-#   ggplot(aes(x = Stage, y = Mass_g, color = Treatment)) +
-#   geom_point() +
-#   geom_smooth(method="lm")
-
-# MasterMetadata %>% 
-#   filter(Age_days <= 100) %>% 
-#   ggplot(aes(x = Stage, y = BL_mm, color = Treatment)) +
-#   geom_point() +
-#   geom_smooth(method="lm")
-
-#stats?
-#create new variable for growth like bmi that uses length and body mass?
-```
-## Beta Diversity
-
-```{r beta div prep, include = FALSE}
-BrayDist <- distance(XEN, method = "bray")
-BrayOrd <- ordinate(XEN, "NMDS", distance = BrayDist)
-BrayPlot <- plot_ordination(XEN, BrayOrd, justDF = TRUE)
-```
-
-Age seems to have clearer clustering over time compared to stage.\
-
-```{r bray, echo = FALSE}
-BrayPlot %>% 
-  ggplot(aes(x = NMDS1, y = NMDS2)) +
-  geom_point(size = 3, aes(color = Treatment)) + c
-
-BrayPlot %>% 
-  ggplot(aes(x = NMDS1, y = NMDS2)) +
-  geom_point(size = 3, aes(color = Age_days)) +
-  scale_colour_gradient(low = "lightblue", high = "navy") +
-  labs(color = "Age (days)")
-
-BrayPlot %>% 
-  ggplot(aes(x = NMDS1, y = NMDS2)) +
-  geom_point(size = 3, aes(color = Stage)) +
-  scale_colour_gradient(low = "lightblue", high = "navy") +
-  labs(color = "Developmental Stage")
-```
-```{r permanovas}
-MasterMetadata_no100 <- MasterMetadata %>% 
-  filter(Age_days <= 100) %>% 
-  filter(readcount >= 3835)
-
-MasterMetadata_no100_noDT <- MasterMetadata_no100 %>% 
-  filter(Treatment != "Delayed Thyroxine")
-
-# by treatment - significant (might be due to age) (F = 6.8)
-adonis2(BrayDist ~ Treatment, data = MasterMetadata_no100)
-
-# by age - significant F = 64.72)
-adonis2(BrayDist ~ Age_days, data = MasterMetadata_no100)
-
-# by stage - significant (F = 27.998)
-adonis2(BrayDist ~ Stage, data = MasterMetadata_no100)
-
-# by tank - significant (F = 1.8)
-adonis2(BrayDist ~ Tank_ID, data = MasterMetadata_no100)
-
-adonis2(BrayDist ~ Age_days * Treatment, data = MasterMetadata_no100)
-
-XEN_noDT <- XEN %>% 
-  subset_samples(Treatment != "Delayed Thyroxine")
-BrayDist_noDT <- distance(XEN_noDT, method = "bray")
-adonis2(BrayDist_noDT ~ Treatment, data = MasterMetadata_no100_noDT)
-```
-
-
-```{r variance partitioning}
-var <- varpart(ASVtab_clean, ~ Age_days, ~ Stage, ~ Mass_g, ~ Tank_ID, data = MasterMetadata)
-var2 <- varpart(ASVtab_clean, ~ Age_days, ~ Stage, ~ Mass_g, ~ Treatment, data = MasterMetadata)
-plot(var2, digits = 2, Xnames = c("Age", "Stage", "Mass", "Treatment"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
-```
-
-```{r alpha diversity}
-MasterMetadata$Richness <- vegan::specnumber(ASVtab_clean)
-MasterMetadata$Shannon <- vegan::diversity(ASVtab_clean, index = "shannon", MARGIN = 1)
-
-MasterMetadata %>% 
-  filter(Age_days <= 100) %>% 
-  ggplot(aes(x = Age_days, y = Richness)) +
-  geom_point(aes(group = Age_days)) +
-  geom_smooth()
-
-
-MasterMetadata %>% 
-  filter(Age_days <= 100) %>% 
-  ggplot(aes(x = Stage, y = Richness)) +
-  geom_point(aes(group = Stage)) +
-  geom_smooth()
-
-MasterMetadata %>% 
-  filter(Age_days <= 100) %>% 
-  ggplot(aes(x = Age_days, y = Shannon)) +
-  geom_point(aes(group = Age_days)) + 
-  geom_smooth()
-
-MasterMetadata %>% 
-  filter(Age_days <= 100) %>% 
-  ggplot(aes(x = Stage, y = Shannon)) +
-  geom_point(aes(group = Stage)) + 
-  geom_smooth()
-
-MasterMetadata %>% 
-  filter(Age_days <= 100) %>% 
-  ggplot(aes(x = Treatment, y = Richness)) +
-  geom_boxplot(aes(group = Treatment)) +
-  geom_smooth()
-```
-
+Then I want to look at the relationship between body length and mass:
 ```{r}
-# glmer(data = MasterMetadata, formula = Shannon ~ Age_days + Stage + (1|Treatment))
+meta.rare %>% 
+  ggplot(aes(x = length.mm, y = mass.g)) +
+  geom_point(size = 3, aes(color = treatment)) + c +
+  labs(x = "Body length (mm)", y = "Mass (g)")
 ```
+There don't seem to be any red points in the upper part of the graph, meaning the thyroxine group was smaller than the other groups. Maybe thyroxine stunted growth by accelerating development?
+### Statistics: Is the relationship between age and stage different depending on treatment
+Linear model here
 
+NEXT STEPS:  
+
+* Create new BMI variable, check out the papers Kevin sent
+* Run linear model for age vs stage
+
+## Alpha diversity
+## Beta diversity
+## Variance partitioning
