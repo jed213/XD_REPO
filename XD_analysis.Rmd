@@ -3,12 +3,7 @@ title: "XD Analysis"
 author: "Jess Diaz"
 date: "2023-05-09"
 output:
-  html_document:
-    toc: true
-    toc_float: true
-    number_sections: false
-    theme: cosmo
-    highlight: monochrome
+  rmdformats::readthedown
 ---
 
 ```{r setup, include=FALSE}
@@ -20,11 +15,24 @@ library(ggplot2)
 library(vegan)
 library(decontam)
 library(phyloseq)
+library(rmdformats)
 source("HighstatLibV10.R")
 
 theme_set(theme_light())
-c = scale_color_manual(values = c("black", "deepskyblue", "red"))
+sc = scale_color_manual(values = c("black", "deepskyblue", "red"))
 ```
+
+```{r functions, include=FALSE}
+# calculates values for stats bars for plots
+data.summary <- function(x) {
+  m <- mean(x)
+  ymin <- m-sd(x)
+  ymax <- m+sd(x)
+  return(c(y=m, ymin=ymin, ymax=ymax))
+}
+```
+
+This is the analysis of the Xenopus tadpole thyroxine experiment. There are X samples plus 12 kit controls. These samples are spread across 3 groups: Thyroxine, Delayed Thyroxine, and Control.
 
 ## Setup
 
@@ -42,12 +50,14 @@ sample_data(XD)$tank.id <- C(factor(sample_data(XD)$tank.id), sum)
 sample_data(XD)$treatment <- C(factor(sample_data(XD)$treatment), sum)
 ```
 
-## Data Cleanup and Exploration
+## Data Cleanup and Setup
 
 ```{r data summary, echo = FALSE}
 # data summaries
 summarize_phyloseq(XD)
 ```
+### Decontam
+
 First I will run decontam using the 12 kit control samples as the negative controls.
 
 ```{r decontam, echo = FALSE}
@@ -64,15 +74,47 @@ contams <- which(contamdf.prevalence$contaminant)
 # list contaminants
 tax <- as(tax_table(XD), "matrix")
 tax[contams,]
+```
+I will also make a plot that shows prevalence in the negatives and in true samples, to check how they are getting classified.  
+```{r decontam plot, echo = FALSE}
+# presence-absence phyloseq for controls and samples
+ps.pa <- transform_sample_counts(XD, function(abund) 1*(abund>0))
+ps.pa.neg <- prune_samples(sample_data(ps.pa)$sample.type == "Blank", ps.pa)
+ps.pa.pos <- prune_samples(sample_data(ps.pa)$sample.type == "Gut", ps.pa)
 
-# remove taxa from phyloseq
-XD.decontam <- prune_taxa(!contamdf.prevalence$contaminant, XD)
+# make dataframe for prevalence
+df.pa <- data.frame(pa.pos=taxa_sums(ps.pa.pos), pa.neg=taxa_sums(ps.pa.neg),
+                    contaminant=contamdf.prevalence$contaminant)
+ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) +
+  geom_point() +
+  xlab("Prevalence (blanks)") +
+  ylab("Prevalence (samples)") +
+  ggtitle("Threshold = 0.5") +
+  geom_abline(slope = 1, intercept = 0)
 ```
 
-24 taxa were identified as contaminants using a threshold where the taxa have to be more prevalent in the negatives than in the samples. I have removed these taxa from analysis.
+24 taxa were identified as contaminants using a threshold of 0.5. Based on the  plot above it seems reasonable to me to classify these as contaminants. Now I just want to make sure that I am not removing too many samples by removing these contaminants. This table shows % of reads removed from that sample after removing contaminants.  
+```{r remove contaminants, echo = FALSE}
+# remove taxa from phyloseq
+XD.decontam <- prune_taxa(!contamdf.prevalence$contaminant, XD)
+
+# set up df with readcounts and % removed
+readcounts <- data.frame(matrix(ncol = 0, nrow = 291))
+readcounts$pre <- as.data.frame(sample_sums(XD))
+readcounts$post <- sample_sums(XD.decontam)
+readcounts$per.removed <- ((readcounts$pre - readcounts$post)/readcounts$pre) *100
+
+print(readcounts$per.removed)
+
+# print otu table for contaminants
+as.data.frame(otu_table(XD)) %>% slice(contams)
+```
+I am happy with how this looks, the couple samples with higher % of reads removed had low read counts anyway.
+
+### Rarefaction
 
 Now I can look at the read counts to see how many reads are in each sample.
-```{r}
+```{r read counts, echo = FALSE}
 sample_sums(XD.decontam)
 ```
 Based on the read counts, I will rarefy at 3638 to retain all data points except the five that had fewer reads. Blanks should be automatically removed with the rarefaction.
@@ -80,15 +122,16 @@ Based on the read counts, I will rarefy at 3638 to retain all data points except
 ```{r rarefy, include=FALSE}
 XD.rare <- rarefy_even_depth(XD.decontam, sample.size=3638, rngseed=14, verbose=TRUE) # rarefy
 ```
-I also need to remove the samples that were allowed to metamorphose.
-```{r}
+
+I also need to remove the samples that were allowed to metamorphose.  
+```{r remove metamorphose, include = FALSE}
 # remove samples that were allowed to metamorphose
 XD.rare <- subset_samples(XD.rare, age.days <= 100)
 ```
 
 ## Exploring Metadata
 
-```{r}
+```{r meta, echo = FALSE}
 # isolate metadata for ggplot
 meta.rare <- meta(XD.rare)
 ```
@@ -100,19 +143,21 @@ meta.rare %>%
   geom_point(size = 3, shape = 16) +
   stat_summary(geom = "line", fun = mean, linewidth = 1.5) +
   labs(x = "Age (days)", y = "Developmental Stage") +
-  c
+  sc
 ```
 
 Then I want to look at the relationship between body length and mass:
-```{r}
+```{r body length and mass, echo = FALSE}
 meta.rare %>% 
   ggplot(aes(x = length.mm, y = mass.g)) +
-  geom_point(size = 3, aes(color = treatment)) + c +
+  geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Body length (mm)", y = "Mass (g)")
 ```
-There don't seem to be any red points in the upper part of the graph, meaning the thyroxine group was smaller than the other groups. Maybe thyroxine stunted growth by accelerating development?
-### Statistics: Is the relationship between age and stage different depending on treatment
-Linear model here
+There don't seem to be any red points in the upper part of the graph, meaning the thyroxine group was smaller than the other groups. Maybe thyroxine stunted growth by accelerating development?  
+
+### Statistics: Is the relationship between age and stage different depending on treatment?  
+
+Linear model here  
 
 NEXT STEPS:  
 
@@ -120,5 +165,125 @@ NEXT STEPS:
 * Run linear model for age vs stage
 
 ## Alpha diversity
+I can look at the initial alpha diversity plots to look for differences. These look pretty similar.  
+```{r alpha all, echo = FALSE}
+plot_richness(XD.rare, x="treatment")
+```
+More zoomed in richness plots for each metadata variable:  
+```{r alpha setup, include = FALSE}
+# save alpha diversity calculations as alpha dataframe
+alpha <- microbiome::alpha(XD.rare)
+
+# save phyloseq metadata as separate object, and add shannon and observed richness
+meta.rare <- meta(XD.rare) %>%
+  mutate(shannon = alpha$diversity_shannon) %>%
+  mutate(observed = alpha$observed)
+```
+
+```{r alpha plots, echo = FALSE}
+# by group
+meta.rare %>%
+  ggplot(aes(x=treatment, y=shannon)) + sc +
+  geom_point(aes(color = treatment), position = position_dodge(width = 0.1), shape = 1, size = 3, alpha = 0.5) +
+  stat_summary(fun.data = data.summary, geom = "errorbar", linewidth = 1, width = 0.5, na.rm = TRUE, aes(color = treatment)) +
+  theme_classic(base_size = 15) +
+  ylab("shannon diversity")
+
+# by age
+meta.rare %>%
+  ggplot(aes(x=age.days, y=shannon)) + sc +
+  geom_point(aes(color = treatment), shape = 1, size = 3) +
+  theme_classic(base_size = 15) +
+  ylab("shannon diversity")
+
+# by stage
+meta.rare %>%
+  ggplot(aes(x=stage, y=shannon)) + sc +
+  geom_point(aes(color = treatment), shape = 1, size = 3) +
+  theme_classic(base_size = 15) +
+  ylab("shannon diversity")
+
+# by age
+meta.rare %>%
+  ggplot(aes(x=age.days, y=shannon)) + sc +
+  geom_point(aes(color = treatment), shape = 1, size = 3) +
+  theme_classic(base_size = 15) +
+  ylab("shannon diversity")
+
+# by days exposed
+meta.rare %>%
+  ggplot(aes(x=days.exposed, y=shannon)) + sc +
+  geom_point(aes(color = treatment), shape = 1, size = 3) +
+  theme_classic(base_size = 15) +
+  ylab("shannon diversity")
+
+# by mass
+meta.rare %>%
+  ggplot(aes(x=mass.g, y=shannon)) + sc +
+  geom_point(aes(color = treatment), shape = 1, size = 3) +
+  theme_classic(base_size = 15) +
+  ylab("shannon diversity")
+```
+
+### Statistics
+
 ## Beta diversity
+```{r beta div prep, include = FALSE}
+# BrayDist <- distance(XEN, method = "bray")
+# BrayOrd <- ordinate(XEN, "NMDS", distance = BrayDist)
+# BrayPlot <- plot_ordination(XEN, BrayOrd, justDF = TRUE)
+```
+
+Age seems to have clearer clustering over time compared to stage.\
+
+```{r bray, echo = FALSE}
+# BrayPlot %>% 
+#   ggplot(aes(x = NMDS1, y = NMDS2)) +
+#   geom_point(size = 3, aes(color = Treatment)) + c
+# 
+# BrayPlot %>% 
+#   ggplot(aes(x = NMDS1, y = NMDS2)) +
+#   geom_point(size = 3, aes(color = Age_days)) +
+#   scale_colour_gradient(low = "lightblue", high = "navy") +
+#   labs(color = "Age (days)")
+# 
+# BrayPlot %>% 
+#   ggplot(aes(x = NMDS1, y = NMDS2)) +
+#   geom_point(size = 3, aes(color = Stage)) +
+#   scale_colour_gradient(low = "lightblue", high = "navy") +
+#   labs(color = "Developmental Stage")
+```
+```{r permanovas}
+# MasterMetadata_no100 <- MasterMetadata %>% 
+#   filter(Age_days <= 100) %>% 
+#   filter(readcount >= 3835)
+# 
+# MasterMetadata_no100_noDT <- MasterMetadata_no100 %>% 
+#   filter(Treatment != "Delayed Thyroxine")
+# 
+# # by treatment - significant (might be due to age) (F = 6.8)
+# adonis2(BrayDist ~ Treatment, data = MasterMetadata_no100)
+# 
+# # by age - significant F = 64.72)
+# adonis2(BrayDist ~ Age_days, data = MasterMetadata_no100)
+# 
+# # by stage - significant (F = 27.998)
+# adonis2(BrayDist ~ Stage, data = MasterMetadata_no100)
+# 
+# # by tank - significant (F = 1.8)
+# adonis2(BrayDist ~ Tank_ID, data = MasterMetadata_no100)
+# 
+# adonis2(BrayDist ~ Age_days * Treatment, data = MasterMetadata_no100)
+# 
+# XEN_noDT <- XEN %>% 
+#   subset_samples(Treatment != "Delayed Thyroxine")
+# BrayDist_noDT <- distance(XEN_noDT, method = "bray")
+# adonis2(BrayDist_noDT ~ Treatment, data = MasterMetadata_no100_noDT)
+```
+
 ## Variance partitioning
+```{r variance partitioning}
+# var <- varpart(ASVtab_clean, ~ Age_days, ~ Stage, ~ Mass_g, ~ Tank_ID, data = MasterMetadata)
+# var2 <- varpart(ASVtab_clean, ~ Age_days, ~ Stage, ~ Mass_g, ~ Treatment, data = MasterMetadata)
+# plot(var2, digits = 2, Xnames = c("Age", "Stage", "Mass", "Treatment"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
+```
