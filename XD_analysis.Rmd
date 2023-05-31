@@ -1,7 +1,7 @@
 ---
 title: "XD Analysis"
 author: "Jess Diaz"
-date: "2023-05-09"
+date: "`r format(Sys.time(), '%a %d %b')`"
 output:
   rmdformats::readthedown
 ---
@@ -225,39 +225,43 @@ meta.rare %>%
   ylab("shannon diversity")
 ```
 
-### Statistics
+### Statistics: Linear model
 
 ## Beta diversity
 ```{r beta div prep, include = FALSE}
-# BrayDist <- distance(XEN, method = "bray")
-# BrayOrd <- ordinate(XEN, "NMDS", distance = BrayDist)
-# BrayPlot <- plot_ordination(XEN, BrayOrd, justDF = TRUE)
+BrayDist <- distance(XD.rare, method = "bray")
+BrayOrd <- ordinate(XD.rare, "NMDS", distance = BrayDist)
+BrayPlot <- plot_ordination(XD.rare, BrayOrd, justDF = TRUE)
 ```
 
-Age seems to have clearer clustering over time compared to stage.\
-
-```{r bray, echo = FALSE}
-# BrayPlot %>% 
-#   ggplot(aes(x = NMDS1, y = NMDS2)) +
-#   geom_point(size = 3, aes(color = Treatment)) + c
-# 
-# BrayPlot %>% 
-#   ggplot(aes(x = NMDS1, y = NMDS2)) +
-#   geom_point(size = 3, aes(color = Age_days)) +
-#   scale_colour_gradient(low = "lightblue", high = "navy") +
-#   labs(color = "Age (days)")
-# 
-# BrayPlot %>% 
-#   ggplot(aes(x = NMDS1, y = NMDS2)) +
-#   geom_point(size = 3, aes(color = Stage)) +
-#   scale_colour_gradient(low = "lightblue", high = "navy") +
-#   labs(color = "Developmental Stage")
+Plot of all samples:
+```{r main beta div, echo = FALSE}
+BrayPlot %>% 
+  ggplot(aes(x = NMDS1, y = NMDS2)) +
+  geom_point(size = 3, aes(color = treatment)) + sc
 ```
+Now I will color the plots by age and stage:
+```{r colored bray curtis, echo = FALSE}
+# colored by age
+BrayPlot %>%
+  ggplot(aes(x = NMDS1, y = NMDS2)) +
+  geom_point(size = 3, aes(color = age.days)) +
+  scale_colour_gradient(low = "lightblue", high = "navy") +
+  labs(color = "Age (days)")
+
+# colored by stage
+BrayPlot %>%
+  ggplot(aes(x = NMDS1, y = NMDS2)) +
+  geom_point(size = 3, aes(color = stage)) +
+  scale_colour_gradient(low = "lightblue", high = "navy") +
+  labs(color = "Developmental Stage")
+```
+
+
+Age seems to have clearer separation over time compared to stage, but they both move from left to right.\
+
+### Statistics: PERMANOVA
 ```{r permanovas}
-# MasterMetadata_no100 <- MasterMetadata %>% 
-#   filter(Age_days <= 100) %>% 
-#   filter(readcount >= 3835)
-# 
 # MasterMetadata_no100_noDT <- MasterMetadata_no100 %>% 
 #   filter(Treatment != "Delayed Thyroxine")
 # 
@@ -282,8 +286,17 @@ Age seems to have clearer clustering over time compared to stage.\
 ```
 
 ## Variance partitioning
-```{r variance partitioning}
-# var <- varpart(ASVtab_clean, ~ Age_days, ~ Stage, ~ Mass_g, ~ Tank_ID, data = MasterMetadata)
-# var2 <- varpart(ASVtab_clean, ~ Age_days, ~ Stage, ~ Mass_g, ~ Treatment, data = MasterMetadata)
-# plot(var2, digits = 2, Xnames = c("Age", "Stage", "Mass", "Treatment"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
+
+Here I am trying to show the amount of variation in microbial structure explained by different explanatory variables or combinations of them.  
+```{r variance partitioning, echo = FALSE}
+# extract asv table
+asvtab <- t(as(otu_table(XD.rare), "matrix"))
+
+# variance partitioning structure
+var <- varpart(asvtab, ~ age.days, ~ stage, ~ mass.g, ~ tank.id, data = meta.rare)
+var2 <- varpart(asvtab, ~ age.days, ~ stage, ~ mass.g, ~ treatment, data = meta.rare)
+
+# plots
+plot(var, digits = 2, Xnames = c("Age", "Stage", "Mass", "Tank"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
+plot(var2, digits = 2, Xnames = c("Age", "Stage", "Mass", "Treatment"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
 ```
