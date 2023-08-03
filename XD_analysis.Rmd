@@ -6,6 +6,8 @@ output:
   rmdformats::readthedown
 ---
 
+# Setup
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(qiime2R)
@@ -32,9 +34,7 @@ data.summary <- function(x) {
 }
 ```
 
-This is the analysis of the Xenopus tadpole thyroxine experiment. There are X samples plus 12 kit controls. These samples are spread across 3 groups: Thyroxine, Delayed Thyroxine, and Control.
-
-## Setup
+This is the analysis of the Xenopus tadpole thyroxine experiment. There are X samples plus 12 kit controls. These samples are spread across 3 groups: Thyroxine, Delayed Thyroxine, and Control.  
 
 ```{r create phyloseq object, include = FALSE}
 # create master phyloseq
@@ -50,13 +50,15 @@ sample_data(XD)$tank.id <- C(factor(sample_data(XD)$tank.id), sum)
 sample_data(XD)$treatment <- C(factor(sample_data(XD)$treatment), sum)
 ```
 
-## Data Cleanup and Setup
+# Data Cleanup
+
+## Summary
 
 ```{r data summary, echo = FALSE}
 # data summaries
 summarize_phyloseq(XD)
 ```
-### Decontam
+## Decontam
 
 First I will run decontam using the 12 kit control samples as the negative controls.
 
@@ -94,6 +96,7 @@ ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) +
 ```
 
 24 taxa were identified as contaminants using a threshold of 0.5. Based on the  plot above it seems reasonable to me to classify these as contaminants. Now I just want to make sure that I am not removing too many samples by removing these contaminants. This table shows % of reads removed from that sample after removing contaminants.  
+
 ```{r remove contaminants, echo = FALSE}
 # remove taxa from phyloseq
 XD.decontam <- prune_taxa(!contamdf.prevalence$contaminant, XD)
@@ -111,7 +114,7 @@ as.data.frame(otu_table(XD)) %>% slice(contams)
 ```
 I am happy with how this looks, the couple samples with higher % of reads removed had low read counts anyway.
 
-### Rarefaction
+## Rarefaction
 
 Now I can look at the read counts to see how many reads are in each sample.
 ```{r read counts, echo = FALSE}
@@ -124,12 +127,15 @@ XD.rare <- rarefy_even_depth(XD.decontam, sample.size=3638, rngseed=14, verbose=
 ```
 
 I also need to remove the samples that were allowed to metamorphose.  
+
 ```{r remove metamorphose, include = FALSE}
 # remove samples that were allowed to metamorphose
 XD.rare <- subset_samples(XD.rare, age.days <= 100)
 ```
 
-## Exploring Metadata
+# Exploring Metadata
+
+## Initial plots
 
 ```{r meta, echo = FALSE}
 # isolate metadata for ggplot
@@ -153,18 +159,74 @@ meta.rare %>%
   geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Body length (mm)", y = "Mass (g)")
 ```
-There don't seem to be any red points in the upper part of the graph, meaning the thyroxine group was smaller than the other groups. Maybe thyroxine stunted growth by accelerating development?  
+There don't seem to be any red points in the upper part of the graph, meaning the thyroxine group was smaller than the other groups. Maybe thyroxine stunted growth by accelerating development? Is is worth exploring this with a linear model?  
 
-### Statistics: Is the relationship between age and stage different depending on treatment?  
+## Body Condition variable 
 
-Linear model here  
+I want to make a new Body Condition measure, using the residuals of a linear regression between mass and body length (see Bancila et al 2010). First I want to transform the variables to give them a more linear relationship. Doing the log10 of both seems to work, and this is also what was done in Denoel et al 2002).  
 
-NEXT STEPS:  
+```{r log body length and mass, echo = FALSE}
+meta.rare %>% 
+  ggplot(aes(x = log10(length.mm), y = log10(mass.g))) +
+  geom_point(size = 3, aes(color = treatment)) + sc +
+  labs(x = "Log10(Body length (mm))", y = "Log10(Mass (g))")
+```
 
-* Create new BMI variable, check out the papers Kevin sent
-* Run linear model for age vs stage
+To find the index I will first make the log variables, then run the model and save the residuals as a body condition variable.  
 
-## Alpha diversity
+```{r body condition model, echo = FALSE}
+meta.rare <- meta.rare %>% 
+  mutate(length.mm.log = log10(length.mm)) %>% 
+  mutate(mass.g.log = log10(mass.g))
+
+BCI.model <- lm(mass.g.log ~ length.mm.log, data = meta.rare)
+summary(BCI.model)
+
+plot(mass.g.log ~ length.mm.log, data = meta.rare)
+x <- seq(0.38, 1.4, length.out = 10)
+lines(x, -3.60608 + 2.82665 * x, col = "red")
+
+meta.rare <- meta.rare %>% 
+  mutate(body.condition = BCI.model$residuals)
+```
+Now I can look at other variables in relation to body condition. For example, how does body condition change with age?  
+```{r BCI and age, echo = FALSE}
+meta.rare %>% 
+  ggplot(aes(x = age.days, y = mass.g)) +
+  geom_point(size = 3, aes(color = treatment)) + sc +
+  labs(x = "Age (days)", y = "Mass (g)")
+
+meta.rare %>% 
+  ggplot(aes(x = age.days, y = body.condition)) +
+  geom_point(size = 3, aes(color = treatment)) + sc +
+  labs(x = "Age (days)", y = "Body condition")
+```
+
+Mass increases as the groups age but body condition doesn't, likely because they are growing proportionately in length as the get bigger in mass.
+
+```{r BCI and treatment, echo = FALSE}
+meta.rare %>% 
+  ggplot(aes(x = treatment, y = body.condition)) +
+  geom_boxplot(size = 1, aes(color = treatment)) + sc +
+  labs(x = "Treatment", y = "Body Condition")
+```
+Treatment doesn't seem to impact body condition. What about the number of days exposed to thyroxine?  
+```{r BCI and treatment, echo = FALSE}
+meta.rare %>% 
+  ggplot(aes(x = days.exposed, y = body.condition)) +
+  geom_point(size = 3, aes(color = treatment)) + sc +
+  labs(x = "Days exposed to thyroxine", y = "Body Condition")
+```
+Body condition also doesn't seem to be changing depending on how long the animals have been exposed to thyroxine.
+
+## Statistics: Is the relationship between age and stage different depending on treatment? 
+
+I can construct a pretty simple linear model using stage as the response variable and age and treatment as predictors. Add in the other variables too?
+
+# Alpha diversity
+
+## Plots
+
 I can look at the initial alpha diversity plots to look for differences. These look pretty similar.  
 ```{r alpha all, echo = FALSE}
 plot_richness(XD.rare, x="treatment")
@@ -203,13 +265,6 @@ meta.rare %>%
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
-# by age
-meta.rare %>%
-  ggplot(aes(x=age.days, y=shannon)) + sc +
-  geom_point(aes(color = treatment), shape = 1, size = 3) +
-  theme_classic(base_size = 15) +
-  ylab("shannon diversity")
-
 # by days exposed
 meta.rare %>%
   ggplot(aes(x=days.exposed, y=shannon)) + sc +
@@ -224,10 +279,16 @@ meta.rare %>%
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 ```
+No clear patterns here. Maybe diversity is increasing a little with age but overall there don't seem to be any visual relationships explaining variation in alpha diversity.  
 
-### Statistics: Linear model
+## Statistics: Linear model
 
-## Beta diversity
+What factors drive alpha diversity variation? Can run a version of the biostats final project.  
+
+# Beta diversity
+
+## Plots
+
 ```{r beta div prep, include = FALSE}
 BrayDist <- distance(XD.rare, method = "bray")
 BrayOrd <- ordinate(XD.rare, "NMDS", distance = BrayDist)
@@ -257,10 +318,12 @@ BrayPlot %>%
   labs(color = "Developmental Stage")
 ```
 
+Age seems to have clearer separation over time compared to stage, but they both move from left to right. This likely explains the clustering of the Delayed Thyroxine group since they were all older tadpoles.  
 
-Age seems to have clearer separation over time compared to stage, but they both move from left to right.\
+## Statistics: PERMANOVA
 
-### Statistics: PERMANOVA
+Need to run this on the new data.  
+
 ```{r permanovas}
 # MasterMetadata_no100_noDT <- MasterMetadata_no100 %>% 
 #   filter(Treatment != "Delayed Thyroxine")
@@ -285,7 +348,7 @@ Age seems to have clearer separation over time compared to stage, but they both 
 # adonis2(BrayDist_noDT ~ Treatment, data = MasterMetadata_no100_noDT)
 ```
 
-## Variance partitioning
+# Variance partitioning
 
 Here I am trying to show the amount of variation in microbial structure explained by different explanatory variables or combinations of them.  
 ```{r variance partitioning, echo = FALSE}
@@ -295,8 +358,12 @@ asvtab <- t(as(otu_table(XD.rare), "matrix"))
 # variance partitioning structure
 var <- varpart(asvtab, ~ age.days, ~ stage, ~ mass.g, ~ tank.id, data = meta.rare)
 var2 <- varpart(asvtab, ~ age.days, ~ stage, ~ mass.g, ~ treatment, data = meta.rare)
+# var3 <- varpart(asvtab, ~ age.days, ~ stage, ~ body.condition, ~ treatment, data = meta.rare)
 
 # plots
 plot(var, digits = 2, Xnames = c("Age", "Stage", "Mass", "Tank"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
 plot(var2, digits = 2, Xnames = c("Age", "Stage", "Mass", "Treatment"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
 ```
+
+Age clearly dominates in terms of its individual contribution, and stage seems to contribute mainly through its association with age.  
+Treatment didn't have a strong individual effect which is good to see. Tank has a huge effect, which probably makes sense since those tadpoles will have the exact same bacterial exposures.
