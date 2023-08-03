@@ -153,6 +153,7 @@ meta.rare %>%
 ```
 
 Then I want to look at the relationship between body length and mass:
+
 ```{r body length and mass, echo = FALSE}
 meta.rare %>% 
   ggplot(aes(x = length.mm, y = mass.g)) +
