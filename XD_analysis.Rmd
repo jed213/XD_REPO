@@ -189,15 +189,23 @@ lines(x, -3.60608 + 2.82665 * x, col = "red")
 
 meta.rare <- meta.rare %>% 
   mutate(body.condition = BCI.model$residuals)
+
+# add body condition to phyloseq
+body.table <- meta.rare %>%
+  select(body.condition)
+body.data <- sample_data(body.table)
+XD.rare1 <- merge_phyloseq(XD.rare, body.data)
+meta.rare1 <- meta(XD.rare1)
 ```
+
 Now I can look at other variables in relation to body condition. For example, how does body condition change with age?  
 ```{r BCI and age, echo = FALSE}
-meta.rare %>% 
+meta.rare1 %>% 
   ggplot(aes(x = age.days, y = mass.g)) +
   geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Age (days)", y = "Mass (g)")
 
-meta.rare %>% 
+meta.rare1 %>% 
   ggplot(aes(x = age.days, y = body.condition)) +
   geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Age (days)", y = "Body condition")
@@ -206,14 +214,14 @@ meta.rare %>%
 Mass increases as the groups age but body condition doesn't, likely because they are growing proportionately in length as the get bigger in mass.
 
 ```{r BCI and treatment, echo = FALSE}
-meta.rare %>% 
+meta.rare1 %>% 
   ggplot(aes(x = treatment, y = body.condition)) +
   geom_boxplot(size = 1, aes(color = treatment)) + sc +
   labs(x = "Treatment", y = "Body Condition")
 ```
 Treatment doesn't seem to impact body condition. What about the number of days exposed to thyroxine?  
 ```{r BCI and treatment, echo = FALSE}
-meta.rare %>% 
+meta.rare1 %>% 
   ggplot(aes(x = days.exposed, y = body.condition)) +
   geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Days exposed to thyroxine", y = "Body Condition")
@@ -230,22 +238,22 @@ I can construct a pretty simple linear model using stage as the response variabl
 
 I can look at the initial alpha diversity plots to look for differences. These look pretty similar.  
 ```{r alpha all, echo = FALSE}
-plot_richness(XD.rare, x="treatment")
+plot_richness(XD.rare1, x="treatment")
 ```
 More zoomed in richness plots for each metadata variable:  
 ```{r alpha setup, include = FALSE}
 # save alpha diversity calculations as alpha dataframe
-alpha <- microbiome::alpha(XD.rare)
+alpha <- microbiome::alpha(XD.rare1)
 
 # save phyloseq metadata as separate object, and add shannon and observed richness
-meta.rare <- meta(XD.rare) %>%
+meta.rare1 <- meta.rare1 %>%
   mutate(shannon = alpha$diversity_shannon) %>%
   mutate(observed = alpha$observed)
 ```
 
 ```{r alpha plots, echo = FALSE}
 # by group
-meta.rare %>%
+meta.rare1 %>%
   ggplot(aes(x=treatment, y=shannon)) + sc +
   geom_point(aes(color = treatment), position = position_dodge(width = 0.1), shape = 1, size = 3, alpha = 0.5) +
   stat_summary(fun.data = data.summary, geom = "errorbar", linewidth = 1, width = 0.5, na.rm = TRUE, aes(color = treatment)) +
@@ -253,28 +261,28 @@ meta.rare %>%
   ylab("shannon diversity")
 
 # by age
-meta.rare %>%
+meta.rare1 %>%
   ggplot(aes(x=age.days, y=shannon)) + sc +
   geom_point(aes(color = treatment), shape = 1, size = 3) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
 # by stage
-meta.rare %>%
+meta.rare1 %>%
   ggplot(aes(x=stage, y=shannon)) + sc +
   geom_point(aes(color = treatment), shape = 1, size = 3) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
 # by days exposed
-meta.rare %>%
+meta.rare1 %>%
   ggplot(aes(x=days.exposed, y=shannon)) + sc +
   geom_point(aes(color = treatment), shape = 1, size = 3) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
 # by mass
-meta.rare %>%
+meta.rare1 %>%
   ggplot(aes(x=mass.g, y=shannon)) + sc +
   geom_point(aes(color = treatment), shape = 1, size = 3) +
   theme_classic(base_size = 15) +
@@ -291,9 +299,9 @@ What factors drive alpha diversity variation? Can run a version of the biostats 
 ## Plots
 
 ```{r beta div prep, include = FALSE}
-BrayDist <- distance(XD.rare, method = "bray")
-BrayOrd <- ordinate(XD.rare, "NMDS", distance = BrayDist)
-BrayPlot <- plot_ordination(XD.rare, BrayOrd, justDF = TRUE)
+BrayDist <- distance(XD.rare1, method = "bray")
+BrayOrd <- ordinate(XD.rare1, "NMDS", distance = BrayDist)
+BrayPlot <- plot_ordination(XD.rare1, BrayOrd, justDF = TRUE)
 ```
 
 Plot of all samples:
@@ -354,17 +362,22 @@ Need to run this on the new data.
 Here I am trying to show the amount of variation in microbial structure explained by different explanatory variables or combinations of them.  
 ```{r variance partitioning, echo = FALSE}
 # extract asv table
-asvtab <- t(as(otu_table(XD.rare), "matrix"))
+asvtab <- t(as(otu_table(XD.rare1), "matrix"))
 
 # variance partitioning structure
 var <- varpart(asvtab, ~ age.days, ~ stage, ~ mass.g, ~ tank.id, data = meta.rare)
 var2 <- varpart(asvtab, ~ age.days, ~ stage, ~ mass.g, ~ treatment, data = meta.rare)
-# var3 <- varpart(asvtab, ~ age.days, ~ stage, ~ body.condition, ~ treatment, data = meta.rare)
+var3 <- varpart(asvtab, ~ age.days, ~ stage, ~ body.condition, ~ treatment, data = meta.rare)
 
 # plots
 plot(var, digits = 2, Xnames = c("Age", "Stage", "Mass", "Tank"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
 plot(var2, digits = 2, Xnames = c("Age", "Stage", "Mass", "Treatment"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
+plot(var3, digits = 2, Xnames = c("Age", "Stage", "Body Condition", "Treatment"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
 ```
 
 Age clearly dominates in terms of its individual contribution, and stage seems to contribute mainly through its association with age.  
 Treatment didn't have a strong individual effect which is good to see. Tank has a huge effect, which probably makes sense since those tadpoles will have the exact same bacterial exposures.
+
+# Differential abundance
+
+Now I want to see whether the three groups (Control, Thyroxine, Delayed Thyroxine) have any taxa that are differentially abundant between them. I start by comparing Control vs (Thyroxine + Delayed Thyroxine) to see whether receiving thyroxine in general altered the microbiome, then will do a pairwise comparison and then split the samples into Control vs Thyroxine vs Delayed Thyroxine.
