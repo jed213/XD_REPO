@@ -19,6 +19,8 @@ library(decontam)
 library(phyloseq)
 library(rmdformats)
 source("HighstatLibV10.R")
+library(ANCOMBC)
+library(tibble)
 
 theme_set(theme_light())
 sc = scale_color_manual(values = c("black", "deepskyblue", "red"))
@@ -173,7 +175,7 @@ meta.rare %>%
   labs(x = "Log10(Body length (mm))", y = "Log10(Mass (g))")
 ```
 
-To find the index I will first make the log variables, then run the model and save the residuals as a body condition variable.  
+To find the index I will first make the log variables, then run the model and save the residuals as a body condition variable. (I am using this as an opportunity to also add the Y/N thyroxine exposure category to be used for differential abundance)  
 
 ```{r body condition model, echo = FALSE}
 meta.rare <- meta.rare %>% 
@@ -188,11 +190,12 @@ x <- seq(0.38, 1.4, length.out = 10)
 lines(x, -3.60608 + 2.82665 * x, col = "red")
 
 meta.rare <- meta.rare %>% 
-  mutate(body.condition = BCI.model$residuals)
+  mutate(body.condition = BCI.model$residuals) %>% 
+  mutate(exposureYN = ifelse(days.exposed >0, "YES", "NO"))
 
 # add body condition to phyloseq
 body.table <- meta.rare %>%
-  select(body.condition)
+  select(body.condition, exposureYN)
 body.data <- sample_data(body.table)
 XD.rare1 <- merge_phyloseq(XD.rare, body.data)
 meta.rare1 <- meta(XD.rare1)
@@ -380,4 +383,89 @@ Treatment didn't have a strong individual effect which is good to see. Tank has 
 
 # Differential abundance
 
-Now I want to see whether the three groups (Control, Thyroxine, Delayed Thyroxine) have any taxa that are differentially abundant between them. I start by comparing Control vs (Thyroxine + Delayed Thyroxine) to see whether receiving thyroxine in general altered the microbiome, then will do a pairwise comparison and then split the samples into Control vs Thyroxine vs Delayed Thyroxine.
+Now I want to see whether there is differential abundance of bacteria between tadpoles that have and haven't been exposed to thyroxine.  
+
+Earlier I made a new Y/N thyroxine exposure metadata category based on number of days exposed.
+
+```{r ANCOMBC exposure, warnings = FALSE, message = FALSE}
+set.seed(14)
+ANCOM.exposure <- ancombc2(data = XD.rare1,
+                           tax_level = NULL,
+                           fix_formula = "exposureYN",
+                           p_adj_method = "BH",
+                           group = "exposureYN",
+                           verbose = TRUE)
+
+tax.frame <- as.data.frame(tax_table(XD.rare1))
+tax.frame <- tax.frame %>% 
+  mutate(TAXON = row.names(tax.frame))
+res <- ANCOM.exposure$res %>% 
+  filter(is.na(lfc_exposureYNYES) == FALSE)
+df_fig1 <- data.frame(res$lfc_exposureYNYES * res$diff_exposureYNYES, check.names = FALSE) %>% 
+  rownames_to_column("ASV")
+colnames(df_fig1)[-1] = "BETA"
+df_fig1 <- df_fig1 %>% 
+  mutate(SD = res$se_exposureYNYES * res$diff_exposureYNYES) %>% 
+  mutate(TAXON = res$taxon) %>% 
+  filter(BETA != 0) %>% 
+  arrange(BETA) %>%
+  mutate(group = ifelse(BETA >0, "g1", "g2"))
+df_fig.exposure = df_fig1 %>% left_join(tax.frame, by = "TAXON")
+
+df_fig.exposure
+```
+
+I can also compare all three groups with each other to see a more thorough breakdown.
+
+```{r ANCOMBC treatment pairwise, warnings = FALSE, message = FALSE}
+set.seed(14)
+ANCOM.treatment <- ancombc2(data = XD.rare1,
+                           tax_level = NULL,
+                           fix_formula = "treatment",
+                           p_adj_method = "BH",
+                           group = "treatment",
+                           verbose = TRUE,
+                           pairwise = TRUE)
+
+# Control vs Thyroxine
+res <- ANCOM.treatment$res_pair %>% 
+  filter(is.na(lfc_treatmentThyroxine) == FALSE)
+df_fig1 <- data.frame(res$lfc_treatmentThyroxine * res$diff_treatmentThyroxine, check.names = FALSE) %>% 
+  rownames_to_column("ASV")
+colnames(df_fig1)[-1] = "BETA"
+df_fig1 <- df_fig1 %>% 
+  mutate(SD = res$se_treatmentThyroxine * res$diff_treatmentThyroxine) %>% 
+  mutate(TAXON = res$taxon) %>% 
+  filter(BETA != 0) %>% 
+  arrange(BETA) %>%
+  mutate(group = ifelse(BETA >0, "g1", "g2"))
+df_fig.CT = df_fig1 %>% left_join(tax.frame, by = "TAXON")
+
+# Control vs Delayed Thyroxine
+res <- ANCOM.treatment$res_pair %>% 
+  filter(is.na(`lfc_treatmentDelayed Thyroxine`) == FALSE)
+df_fig1 <- data.frame(res$`lfc_treatmentDelayed Thyroxine` * res$`diff_treatmentDelayed Thyroxine`, check.names = FALSE) %>% 
+  rownames_to_column("ASV")
+colnames(df_fig1)[-1] = "BETA"
+df_fig1 <- df_fig1 %>% 
+  mutate(SD = res$`se_treatmentDelayed Thyroxine` * res$`diff_treatmentDelayed Thyroxine`) %>% 
+  mutate(TAXON = res$taxon) %>% 
+  filter(BETA != 0) %>% 
+  arrange(BETA) %>%
+  mutate(group = ifelse(BETA >0, "g1", "g2"))
+df_fig.CDT = df_fig1 %>% left_join(tax.frame, by = "TAXON")
+
+# Thyroxine vs Delayed Thyroxine
+res <- ANCOM.treatment$res_pair %>% 
+  filter(is.na(`lfc_treatmentThyroxine_treatmentDelayed Thyroxine`) == FALSE)
+df_fig1 <- data.frame(res$`lfc_treatmentThyroxine_treatmentDelayed Thyroxine` * res$`diff_treatmentThyroxine_treatmentDelayed Thyroxine`, check.names = FALSE) %>% 
+  rownames_to_column("ASV")
+colnames(df_fig1)[-1] = "BETA"
+df_fig1 <- df_fig1 %>% 
+  mutate(SD = res$`se_treatmentThyroxine_treatmentDelayed Thyroxine` * res$`diff_treatmentThyroxine_treatmentDelayed Thyroxine`) %>% 
+  mutate(TAXON = res$taxon) %>% 
+  filter(BETA != 0) %>% 
+  arrange(BETA) %>%
+  mutate(group = ifelse(BETA >0, "g1", "g2"))
+df_fig.TDT = df_fig1 %>% left_join(tax.frame, by = "TAXON")
+```
