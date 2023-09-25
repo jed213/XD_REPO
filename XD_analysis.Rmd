@@ -10,6 +10,8 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
+# load libraries
 library(qiime2R)
 library(microbiome)
 library(dplyr)
@@ -21,9 +23,11 @@ library(rmdformats)
 source("HighstatLibV10.R")
 library(ANCOMBC)
 library(tibble)
+library(pairwiseAdonis)
 
+# set graphing options
 theme_set(theme_light())
-sc = scale_color_manual(values = c("black", "deepskyblue", "red"))
+sc = scale_color_manual(values = c("black", "lightpink", "red"))
 ```
 
 ```{r functions, include=FALSE}
@@ -64,7 +68,7 @@ summarize_phyloseq(XD)
 
 First I will run decontam using the 12 kit control samples as the negative controls.
 
-```{r decontam, echo = FALSE}
+```{r decontam, echo = FALSE, message = FALSE}
 # make new variable where controls are "TRUE"
 sample_data(XD)$is.neg <- sample_data(XD)$sample.type == "Blank"
 
@@ -80,7 +84,7 @@ tax <- as(tax_table(XD), "matrix")
 tax[contams,]
 ```
 I will also make a plot that shows prevalence in the negatives and in true samples, to check how they are getting classified.  
-```{r decontam plot, echo = FALSE}
+```{r decontam plot, echo = FALSE, message = FALSE}
 # presence-absence phyloseq for controls and samples
 ps.pa <- transform_sample_counts(XD, function(abund) 1*(abund>0))
 ps.pa.neg <- prune_samples(sample_data(ps.pa)$sample.type == "Blank", ps.pa)
@@ -89,6 +93,8 @@ ps.pa.pos <- prune_samples(sample_data(ps.pa)$sample.type == "Gut", ps.pa)
 # make dataframe for prevalence
 df.pa <- data.frame(pa.pos=taxa_sums(ps.pa.pos), pa.neg=taxa_sums(ps.pa.neg),
                     contaminant=contamdf.prevalence$contaminant)
+
+# plot prevalence
 ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) +
   geom_point() +
   xlab("Prevalence (blanks)") +
@@ -99,7 +105,7 @@ ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) +
 
 24 taxa were identified as contaminants using a threshold of 0.5. Based on the  plot above it seems reasonable to me to classify these as contaminants. Now I just want to make sure that I am not removing too many samples by removing these contaminants. This table shows % of reads removed from that sample after removing contaminants.  
 
-```{r remove contaminants, echo = FALSE}
+```{r remove contaminants, echo = FALSE, message = FALSE}
 # remove taxa from phyloseq
 XD.decontam <- prune_taxa(!contamdf.prevalence$contaminant, XD)
 
@@ -109,30 +115,17 @@ readcounts$pre <- as.data.frame(sample_sums(XD))
 readcounts$post <- sample_sums(XD.decontam)
 readcounts$per.removed <- ((readcounts$pre - readcounts$post)/readcounts$pre) *100
 
+# print percent of reads in each sample that were removed
 print(readcounts$per.removed)
 
 # print otu table for contaminants
 as.data.frame(otu_table(XD)) %>% slice(contams)
 ```
-I am happy with how this looks, the couple samples with higher % of reads removed had low read counts anyway.
+I am happy with how this looks, the couple samples with higher % of reads removed had low read counts anyway. Last, I need to remove the frogs that were allowed to metamorphose.
 
-## Rarefaction
-
-Now I can look at the read counts to see how many reads are in each sample.
-```{r read counts, echo = FALSE}
-sample_sums(XD.decontam)
-```
-Based on the read counts, I will rarefy at 3638 to retain all data points except the five that had fewer reads. Blanks should be automatically removed with the rarefaction.
-
-```{r rarefy, include=FALSE}
-XD.rare <- rarefy_even_depth(XD.decontam, sample.size=3638, rngseed=14, verbose=TRUE) # rarefy
-```
-
-I also need to remove the samples that were allowed to metamorphose.  
-
-```{r remove metamorphose, include = FALSE}
+```{r phyloseq cleanup, include = FALSE}
 # remove samples that were allowed to metamorphose
-XD.rare <- subset_samples(XD.rare, age.days <= 100)
+XD.clean <- subset_samples(XD.decontam, age.days <= 100)
 ```
 
 # Exploring Metadata
@@ -141,12 +134,13 @@ XD.rare <- subset_samples(XD.rare, age.days <= 100)
 
 ```{r meta, echo = FALSE}
 # isolate metadata for ggplot
-meta.rare <- meta(XD.rare)
+meta <- meta(XD.clean)
 ```
 
 First I want to make the age/stage plot, colored by treatment group.
 ```{r Age vs Stage, echo = FALSE}
-meta.rare %>% 
+# age and stage plot, line connecting means
+meta %>% 
   ggplot(aes(x = age.days, y = stage, color = treatment)) +
   geom_point(size = 3, shape = 16) +
   stat_summary(geom = "line", fun = mean, linewidth = 1.5) +
@@ -157,19 +151,21 @@ meta.rare %>%
 Then I want to look at the relationship between body length and mass:
 
 ```{r body length and mass, echo = FALSE}
-meta.rare %>% 
+# mass vs length plot
+meta %>% 
   ggplot(aes(x = length.mm, y = mass.g)) +
   geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Body length (mm)", y = "Mass (g)")
 ```
-There don't seem to be any red points in the upper part of the graph, meaning the thyroxine group was smaller than the other groups. Maybe thyroxine stunted growth by accelerating development? Is is worth exploring this with a linear model?  
+There don't seem to be any red points in the upper part of the graph, meaning the thyroxine group was smaller than the other groups. Maybe thyroxine stunted growth by accelerating development? Is is worth (or possible) to explore this with a linear model?  
 
 ## Body Condition variable 
 
 I want to make a new Body Condition measure, using the residuals of a linear regression between mass and body length (see Bancila et al 2010). First I want to transform the variables to give them a more linear relationship. Doing the log10 of both seems to work, and this is also what was done in Denoel et al 2002).  
 
 ```{r log body length and mass, echo = FALSE}
-meta.rare %>% 
+# plot log-transformed mass vs length
+meta %>% 
   ggplot(aes(x = log10(length.mm), y = log10(mass.g))) +
   geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Log10(Body length (mm))", y = "Log10(Mass (g))")
@@ -177,38 +173,43 @@ meta.rare %>%
 
 To find the index I will first make the log variables, then run the model and save the residuals as a body condition variable. (I am using this as an opportunity to also add the Y/N thyroxine exposure category to be used for differential abundance)  
 
-```{r body condition model, echo = FALSE}
-meta.rare <- meta.rare %>% 
+```{r body condition model, echo = FALSE, message = FALSE}
+# add log-transformed length and mass
+meta <- meta %>% 
   mutate(length.mm.log = log10(length.mm)) %>% 
   mutate(mass.g.log = log10(mass.g))
 
-BCI.model <- lm(mass.g.log ~ length.mm.log, data = meta.rare)
+# run model for log mass (response) and log length (explanatory)
+BCI.model <- lm(mass.g.log ~ length.mm.log, data = meta)
 summary(BCI.model)
 
-plot(mass.g.log ~ length.mm.log, data = meta.rare)
+# plot the model prediction
+plot(mass.g.log ~ length.mm.log, data = meta)
 x <- seq(0.38, 1.4, length.out = 10)
 lines(x, -3.60608 + 2.82665 * x, col = "red")
 
-meta.rare <- meta.rare %>% 
+# add residuals to metadata as body condition measure
+# add variable saying whether tadpole was ever exposed to thyroxine
+meta <- meta %>% 
   mutate(body.condition = BCI.model$residuals) %>% 
   mutate(exposureYN = ifelse(days.exposed >0, "YES", "NO"))
 
-# add body condition to phyloseq
-body.table <- meta.rare %>%
+# integrate variables into phyloseq object
+meta_to_add <- meta %>%
   select(body.condition, exposureYN)
-body.data <- sample_data(body.table)
-XD.rare1 <- merge_phyloseq(XD.rare, body.data)
-meta.rare1 <- meta(XD.rare1)
+meta_to_add.ps <- sample_data(meta_to_add)
+XD.complete <- merge_phyloseq(XD.clean, meta_to_add.ps)
+meta.complete <- meta(XD.complete)
 ```
 
 Now I can look at other variables in relation to body condition. For example, how does body condition change with age?  
 ```{r BCI and age, echo = FALSE}
-meta.rare1 %>% 
-  ggplot(aes(x = age.days, y = mass.g)) +
+meta.complete %>% 
+  ggplot(aes(x = age.days, y = mass.g, shape = treatment)) +
   geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Age (days)", y = "Mass (g)")
 
-meta.rare1 %>% 
+meta.complete %>% 
   ggplot(aes(x = age.days, y = body.condition)) +
   geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Age (days)", y = "Body condition")
@@ -217,23 +218,38 @@ meta.rare1 %>%
 Mass increases as the groups age but body condition doesn't, likely because they are growing proportionately in length as the get bigger in mass.
 
 ```{r BCI and treatment, echo = FALSE}
-meta.rare1 %>% 
+meta.complete %>% 
   ggplot(aes(x = treatment, y = body.condition)) +
   geom_boxplot(size = 1, aes(color = treatment)) + sc +
   labs(x = "Treatment", y = "Body Condition")
 ```
 Treatment doesn't seem to impact body condition. What about the number of days exposed to thyroxine?  
-```{r BCI and treatment, echo = FALSE}
-meta.rare1 %>% 
+
+```{r BCI and days exposed, echo = FALSE}
+meta.complete %>% 
   ggplot(aes(x = days.exposed, y = body.condition)) +
   geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Days exposed to thyroxine", y = "Body Condition")
 ```
-Body condition also doesn't seem to be changing depending on how long the animals have been exposed to thyroxine.
 
-## Statistics: Is the relationship between age and stage different depending on treatment? 
+Body condition also doesn't seem to be changing depending on how long the animals have been exposed to thyroxine.  
 
-I can construct a pretty simple linear model using stage as the response variable and age and treatment as predictors. Add in the other variables too?
+## (TO-DO) Statistics: Is thyroxine stunting growth?
+
+To test this, I could construct a model where mass is the response variable, and treatment/exposure and age are the predictor variables. This could tell me whether treatment/exposure has an effect on growth while controlling for the increase in age over time.
+
+# Rarefaction
+
+Now I can look at the read counts to see how many reads are in each sample.
+```{r read counts, echo = FALSE}
+sample_sums(XD.complete)
+```
+Based on the read counts, I will rarefy at 3638 to retain all data points except the five that had fewer reads. Blanks should be automatically removed with the rarefaction.
+
+```{r rarefy, include=FALSE}
+XD.rare <- rarefy_even_depth(XD.complete, sample.size=3638, rngseed=14, verbose=TRUE) # rarefy
+meta.rare <- meta(XD.rare)
+```
 
 # Alpha diversity
 
@@ -241,51 +257,52 @@ I can construct a pretty simple linear model using stage as the response variabl
 
 I can look at the initial alpha diversity plots to look for differences. These look pretty similar.  
 ```{r alpha all, echo = FALSE}
-plot_richness(XD.rare1, x="treatment")
+plot_richness(XD.rare, x="treatment")
 ```
 More zoomed in richness plots for each metadata variable:  
+
 ```{r alpha setup, include = FALSE}
 # save alpha diversity calculations as alpha dataframe
-alpha <- microbiome::alpha(XD.rare1)
+alpha <- microbiome::alpha(XD.rare)
 
 # save phyloseq metadata as separate object, and add shannon and observed richness
-meta.rare1 <- meta.rare1 %>%
+meta.rare <- meta.rare %>%
   mutate(shannon = alpha$diversity_shannon) %>%
   mutate(observed = alpha$observed)
 ```
 
 ```{r alpha plots, echo = FALSE}
 # by group
-meta.rare1 %>%
-  ggplot(aes(x=treatment, y=shannon)) + sc +
-  geom_point(aes(color = treatment), position = position_dodge(width = 0.1), shape = 1, size = 3, alpha = 0.5) +
+meta.rare %>%
+  ggplot(aes(x=treatment, y=shannon, shape=treatment)) + sc +
+  geom_point(aes(color = treatment), position = position_dodge(width = 0.1), size = 3, alpha = 0.5) +
   stat_summary(fun.data = data.summary, geom = "errorbar", linewidth = 1, width = 0.5, na.rm = TRUE, aes(color = treatment)) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
 # by age
-meta.rare1 %>%
+meta.rare %>%
   ggplot(aes(x=age.days, y=shannon)) + sc +
   geom_point(aes(color = treatment), shape = 1, size = 3) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
 # by stage
-meta.rare1 %>%
+meta.rare %>%
   ggplot(aes(x=stage, y=shannon)) + sc +
   geom_point(aes(color = treatment), shape = 1, size = 3) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
 # by days exposed
-meta.rare1 %>%
+meta.rare %>%
   ggplot(aes(x=days.exposed, y=shannon)) + sc +
   geom_point(aes(color = treatment), shape = 1, size = 3) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
 # by mass
-meta.rare1 %>%
+meta.rare %>%
   ggplot(aes(x=mass.g, y=shannon)) + sc +
   geom_point(aes(color = treatment), shape = 1, size = 3) +
   theme_classic(base_size = 15) +
@@ -293,27 +310,222 @@ meta.rare1 %>%
 ```
 No clear patterns here. Maybe diversity is increasing a little with age but overall there don't seem to be any visual relationships explaining variation in alpha diversity.  
 
-## Statistics: Linear model
+## Statistics: What factors determine variation in alpha diversity?
 
-What factors drive alpha diversity variation? Can run a version of the biostats final project.  
+Response variable: shannon
+Explanatory variables: dna.ng.ul, tank.id, mass.g, length.mm, stage, treatment, age.days, readcount, exposureYN, body.condition.
+Based on the plots I will remove length since it covaries with mass, and will log transform DNA and mass.  
+I will also scale the age and stage variables so that I can directly compare their effects in the model.
+
+```{r pairs plot, warning = FALSE, echo = FALSE}
+meta.rare$exposureYN <- C(factor(meta.rare$exposureYN), sum)
+alpha.pairs <- meta.rare %>% 
+  select(-date.collected, -dissector, -sample.type, -days.exposed, -is.neg, -observed) 
+
+# Make pairs plot
+pairs(alpha.pairs, lower.panel=panel.smooth, diag.panel=panel.hist, upper.panel=panel.cor)
+
+# Calculate VIFs
+corvif(subset(alpha.pairs, select=-c(shannon, treatment, tank.id, exposureYN)))
+corvif(subset(alpha.pairs, select=-c(shannon, treatment, tank.id, exposureYN, length.mm)))
+
+# New histograms
+hist(log(alpha.pairs$dna.ng.ul))
+hist(log(alpha.pairs$mass.g))
+
+# Make transformations
+alpha.pairs.transformed <- alpha.pairs %>% 
+  mutate(dna.ng.ul.LOG = log(dna.ng.ul)) %>% 
+  mutate(mass.g.LOG = log(mass.g)) %>% 
+  select(-mass.g, -dna.ng.ul)
+
+# New plots
+pairs(alpha.pairs.transformed, lower.panel=panel.smooth, diag.panel=panel.hist,
+      upper.panel=panel.cor)
+
+# Scale age and stage variables
+alpha.pairs.scaled <- alpha.pairs.transformed %>% 
+  mutate(age.days.S = scale(age.days)) %>% 
+  mutate(stage.S = scale(stage)) %>% 
+  select(-age.days, -stage, -length.mm)
+```
+
+Now to fit the model: I am chooosing not to use tank as a random effect because I think it had some problems when I did that for my biostats project.
+
+```{r initial model}
+model <- lm(shannon ~ tank.id + dna.ng.ul.LOG + mass.g.LOG + treatment + 
+              body.condition + exposureYN + shannon + age.days.S + stage.S, 
+             data = alpha.pairs.scaled)
+summary(model)
+```
+I believe there is a problem including both tank and treatment because the treatments were given to specific tanks. I will remove the treatment variable and try again.
+```{r initial model redo}
+model <- lm(shannon ~ tank.id + dna.ng.ul.LOG + mass.g.LOG + 
+              body.condition + exposureYN + shannon + age.days.S + stage.S, 
+             data = alpha.pairs.scaled)
+summary(model)
+```
+
+Now I can compare this to other model variations. Namely:  
+1. Shannon ~ Age + Stage  
+2. Shannon ~ Age + Stage + Treatment  
+3. Shannon ~ Age + Stage + Tank ID  
+4. Shannon ~ Age + Stage + Mass 
+5. Shannon ~ Age + Stage + DNA  
+6. Shannon ~ Age + Stage + Body condition  
+7. Shannon ~ Age + Stage + ExposureYN  
+8. Shannon ~ Age * Stage + Tank ID + DNA + Mass + Body condition + ExposureYN  
+
+```{r model comparison}
+model1 <- lm(shannon ~ age.days.S + stage.S, 
+             data = alpha.pairs.scaled)
+model2 <- lm(shannon ~ age.days.S + stage.S + treatment, 
+             data = alpha.pairs.scaled)
+model3 <- lm(shannon ~ age.days.S + stage.S + tank.id, 
+             data = alpha.pairs.scaled)
+model4 <- lm(shannon ~ age.days.S + stage.S + mass.g.LOG, 
+             data = alpha.pairs.scaled)
+model5 <- lm(shannon ~ age.days.S + stage.S + dna.ng.ul.LOG, 
+             data = alpha.pairs.scaled)
+model6 <- lm(shannon ~ age.days.S + stage.S + body.condition, 
+             data = alpha.pairs.scaled)
+model7 <- lm(shannon ~ age.days.S + stage.S + exposureYN, 
+             data = alpha.pairs.scaled)
+model8 <- lm(shannon ~ tank.id + dna.ng.ul.LOG + mass.g.LOG + 
+              body.condition + exposureYN + age.days.S * stage.S, 
+             data = alpha.pairs.scaled)
+
+# Find the AICs
+AIC(model1)
+AIC(model2)
+AIC(model3)
+AIC(model4)
+AIC(model5)
+AIC(model6)
+AIC(model7)
+AIC(model8)
+AIC(model)
+```
+The best model seems to be model 5, which makes sense given the very high significance of DNA concentration in the first model. I will try one more version of model 5 with an interaction term between age and stage.
+```{r model 5}
+model5.2 <- lm(shannon ~ age.days.S * stage.S + dna.ng.ul.LOG, 
+             data = alpha.pairs.scaled)
+AIC(model5.2)
+```
+It looks like this was about the same so I will exclude the interaction term. Now model validation:  
+```{r model validation}
+# Residuals vs fitted values
+plot(residuals(model5, type="response") ~ model5$fitted.values)
+abline(0,0,col="gray")
+
+# Residuals vs Age
+plot(residuals(model5, type="response") ~ model5$model$age.days.S)
+abline(0,0,col="gray")
+
+# Residuals vs Stage
+plot(residuals(model5, type="response") ~ model5$model$stage.S)
+abline(0,0,col="gray")
+
+# Residuals vs body length
+plot(residuals(model5, type="response") ~ model5$model$dna.ng.ul.LOG)
+abline(0,0,col="gray")
+```
+
+The residuals look fine to me. Can proceed with model interpretation.
+```{r model results, echo = FALSE, warnings = FALSE, message = FALSE}
+summary(model5)
+
+# test significance of terms
+car::Anova(model5)
+```
+DNA concentration was by far the biggest predictor of shannon diversity in these tadpoles, which limits our interpretation of what may be happening biologically. Both age and stage were also significant predictors, with stage explaining slightly more variation in shannon diversity.
+
+Trying more versions of the model with and without DNA included.  
+With DNA:  
+9.1. Shannon ~ Age + Stage + DNA + Mass  
+9.2. Shannon ~ Age + Stage + DNA + Treatment  
+9.3. Shannon ~ Age + Stage + DNA + Tank ID  
+
+Without DNA:  
+10.1. Shannon ~ Age + Stage + Mass + Body condition + ExposureYN + Tank ID  
+10.2. Shannon ~ Age + Stage + Mass + Body condition + Tank ID  
+10.3. Shannon ~ Age + Stage + Mass + Tank ID  
+10.4. Shannon ~ Age * Stage + Mass + Tank ID  
+10.5. Shannon ~ Age * Stage  
+
+```{r new models}
+model9.1 <- lm(shannon ~ age.days.S + stage.S + dna.ng.ul.LOG, + mass.g.LOG, 
+             data = alpha.pairs.scaled)
+model9.2 <- lm(shannon ~ age.days.S + stage.S + dna.ng.ul.LOG + treatment, 
+             data = alpha.pairs.scaled)
+model9.3 <- lm(shannon ~ age.days.S + stage.S + dna.ng.ul.LOG + tank.id, 
+             data = alpha.pairs.scaled)
+
+
+model10.1 <- lm(shannon ~ age.days.S + stage.S + mass.g.LOG + body.condition + exposureYN + tank.id, 
+             data = alpha.pairs.scaled)
+model10.2 <- lm(shannon ~ age.days.S + stage.S + mass.g.LOG + body.condition + tank.id, 
+             data = alpha.pairs.scaled)
+model10.3 <- lm(shannon ~ age.days.S + stage.S + mass.g.LOG + tank.id, 
+             data = alpha.pairs.scaled)
+model10.4 <- lm(shannon ~ age.days.S * stage.S + mass.g.LOG + tank.id, 
+             data = alpha.pairs.scaled)
+model10.5 <- lm(shannon ~ age.days.S * stage.S, 
+             data = alpha.pairs.scaled)
+
+# Find the AICs
+AIC(model9.1)
+AIC(model9.2)
+AIC(model9.3)
+AIC(model10.1)
+AIC(model10.2)
+AIC(model10.3)
+AIC(model10.4)
+AIC(model10.5)
+```
+Overall, the models with DNA included are a better fit, as expected by the previous results. When DNA is not included, models 10.5, 1, 4, 6 and 6 are the next best fits. Two of these are just age and stage alone (with the best one having interaction term), and the other two are age/stage/mass and age/stage/bodycondition. I am going to dig deeper into the age/stage + interaction alone model, to see the relative weights of each variable in that model.  
+
+```{r model10.5 validation}
+# Residuals vs fitted values
+plot(residuals(model10.5, type="response") ~ model5$fitted.values)
+abline(0,0,col="gray")
+
+# Residuals vs Age
+plot(residuals(model10.5, type="response") ~ model5$model$age.days.S)
+abline(0,0,col="gray")
+
+# Residuals vs Stage
+plot(residuals(model10.5, type="response") ~ model5$model$stage.S)
+abline(0,0,col="gray")
+```
+
+```{r model 10.5 results, echo = FALSE, warnings = FALSE, message = FALSE}
+summary(model10.5)
+
+# test significance of terms
+car::Anova(model10.5)
+```
+Interestingly, age is appearing as super significant while stage and even the interaction term are borderline non-significant. This aligns with the rest of the data that tends to show age having a greater effect than stage.
 
 # Beta diversity
 
 ## Plots
 
-```{r beta div prep, include = FALSE}
-BrayDist <- distance(XD.rare1, method = "bray")
-BrayOrd <- ordinate(XD.rare1, "NMDS", distance = BrayDist)
-BrayPlot <- plot_ordination(XD.rare1, BrayOrd, justDF = TRUE)
+```{r beta div prep}
+BrayDist <- distance(XD.rare, method = "bray")
+set.seed(14)
+BrayOrd <- ordinate(XD.rare, "NMDS", distance = BrayDist)
+BrayPlot <- plot_ordination(XD.rare, BrayOrd, justDF = TRUE)
 ```
 
 Plot of all samples:
 ```{r main beta div, echo = FALSE}
 BrayPlot %>% 
-  ggplot(aes(x = NMDS1, y = NMDS2)) +
+  ggplot(aes(x = NMDS1, y = NMDS2, shape=treatment)) +
   geom_point(size = 3, aes(color = treatment)) + sc
 ```
-Now I will color the plots by age and stage:
+Now I will color the plots by age and stage:  
+
 ```{r colored bray curtis, echo = FALSE}
 # colored by age
 BrayPlot %>%
@@ -332,71 +544,80 @@ BrayPlot %>%
 
 Age seems to have clearer separation over time compared to stage, but they both move from left to right. This likely explains the clustering of the Delayed Thyroxine group since they were all older tadpoles.  
 
+I can also color by exposure to thyroxine.  
+
+```{r thyroxine beta div, echo = FALSE}
+BrayPlot %>%
+  ggplot(aes(x = NMDS1, y = NMDS2)) +
+  geom_point(size = 3, aes(color = days.exposed)) +
+  scale_colour_gradient(low = "lightblue", high = "navy") +
+  labs(color = "Days Exposed")
+```
+Thyroxine exposure itself doesn't seem to be driving this since you have tadpoles with 0 days exposed all over the graph. Age/stage definitely seem to be the major drivers here.
+
 ## Statistics: PERMANOVA
 
-Need to run this on the new data.  
+Using a PERMANOVA I should be able to see how various variables influence beta diversity. My variables of interest are treatment, age, and stage. I also want to include tank ID as a random effect, but cannot do that here so I will try to include it as a fixed effect.
 
-```{r permanovas}
-# MasterMetadata_no100_noDT <- MasterMetadata_no100 %>% 
-#   filter(Treatment != "Delayed Thyroxine")
-# 
-# # by treatment - significant (might be due to age) (F = 6.8)
-# adonis2(BrayDist ~ Treatment, data = MasterMetadata_no100)
-# 
-# # by age - significant F = 64.72)
-# adonis2(BrayDist ~ Age_days, data = MasterMetadata_no100)
-# 
-# # by stage - significant (F = 27.998)
-# adonis2(BrayDist ~ Stage, data = MasterMetadata_no100)
-# 
-# # by tank - significant (F = 1.8)
-# adonis2(BrayDist ~ Tank_ID, data = MasterMetadata_no100)
-# 
-# adonis2(BrayDist ~ Age_days * Treatment, data = MasterMetadata_no100)
-# 
-# XEN_noDT <- XEN %>% 
-#   subset_samples(Treatment != "Delayed Thyroxine")
-# BrayDist_noDT <- distance(XEN_noDT, method = "bray")
-# adonis2(BrayDist_noDT ~ Treatment, data = MasterMetadata_no100_noDT)
+```{r permanovas, echo = FALSE}
+adonis2(BrayDist ~ treatment + age.days + stage + tank.id, data = meta.rare)
 ```
+
+Everything is very significant, but the F-stat for age is WAY higher than any of the others, including the stat for stage. In fact, stage may have had less of an effect than treatment.
+
+The other stat to add is to see how the treatment groups cluster using a pairwise adonis.
+```{r pairwise Adonis, echo = FALSE}
+# pairwise by treatment
+pairwise.adonis(BrayDist, meta.rare$treatment)
+```
+
+It looks like the control and thyroxine groups may have significantly different composition. Is this a problem for results? I guess this difference is way less strong than the age effect.
 
 # Variance partitioning
 
 Here I am trying to show the amount of variation in microbial structure explained by different explanatory variables or combinations of them.  
 ```{r variance partitioning, echo = FALSE}
 # extract asv table
-asvtab <- t(as(otu_table(XD.rare1), "matrix"))
+asvtab <- t(as(otu_table(XD.rare), "matrix"))
 
 # variance partitioning structure
 var <- varpart(asvtab, ~ age.days, ~ stage, ~ mass.g, ~ tank.id, data = meta.rare)
 var2 <- varpart(asvtab, ~ age.days, ~ stage, ~ mass.g, ~ treatment, data = meta.rare)
 var3 <- varpart(asvtab, ~ age.days, ~ stage, ~ body.condition, ~ treatment, data = meta.rare)
+var4 <- varpart(asvtab, ~ age.days, ~ stage, ~ mass.g, ~ days.exposed, data = meta.rare)
 
 # plots
 plot(var, digits = 2, Xnames = c("Age", "Stage", "Mass", "Tank"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
 plot(var2, digits = 2, Xnames = c("Age", "Stage", "Mass", "Treatment"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
 plot(var3, digits = 2, Xnames = c("Age", "Stage", "Body Condition", "Treatment"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
+plot(var4, digits = 2, Xnames = c("Age", "Stage", "Mass", "Days Exposed"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
 ```
 
-Age clearly dominates in terms of its individual contribution, and stage seems to contribute mainly through its association with age.  
+Age clearly dominates in terms of its individual contribution, and stage seems to contribute mainly through its correlation with age.  
 Treatment didn't have a strong individual effect which is good to see. Tank has a huge effect, which probably makes sense since those tadpoles will have the exact same bacterial exposures.
 
-# Differential abundance
+# (TO-DO) Differential abundance
+
+*STILL NEED TO FIGURE OUT STRUCTURAL ZEROS*  
+*STILL NEED TO CONFIRM LFC DIRECTION*
+
+## Exposed vs not exposed
 
 Now I want to see whether there is differential abundance of bacteria between tadpoles that have and haven't been exposed to thyroxine.  
 
 Earlier I made a new Y/N thyroxine exposure metadata category based on number of days exposed.
 
-```{r ANCOMBC exposure, warnings = FALSE, message = FALSE}
+```{r ANCOMBC exposure, warnings = FALSE, message = FALSE, echo = FALSE}
 set.seed(14)
-ANCOM.exposure <- ancombc2(data = XD.rare1,
-                           tax_level = NULL,
+ANCOM.exposure <- ancombc2(data = XD.complete,
+                           tax_level = "Phylum",
                            fix_formula = "exposureYN",
                            p_adj_method = "BH",
                            group = "exposureYN",
+                           struc_zero = TRUE,
                            verbose = TRUE)
 
-tax.frame <- as.data.frame(tax_table(XD.rare1))
+tax.frame <- as.data.frame(tax_table(XD.complete))
 tax.frame <- tax.frame %>% 
   mutate(TAXON = row.names(tax.frame))
 res <- ANCOM.exposure$res %>% 
@@ -413,17 +634,30 @@ df_fig1 <- df_fig1 %>%
 df_fig.exposure = df_fig1 %>% left_join(tax.frame, by = "TAXON")
 
 df_fig.exposure
+# 
+# zeros <- ANCOM.exposure$zero_ind
+# # set up zeros comparison dataframe
+# # remove taxa that were not present in either group or were present in both
+# zeros_setup <- zeros %>% 
+#   mutate(TAXON = zeros$taxon)
+# ANCOM.all_zeros <- zeros_setup %>% left_join(tax.frame, by = "TAXON") %>% 
+#   filter(!(`structural_zero (exposureYN = NO)` == TRUE & `structural_zero (exposureYN = YES)` == TRUE)) %>% 
+#   filter(!(`structural_zero (exposureYN = NO)` == FALSE & `structural_zero (exposureYN = YES)` == FALSE)) %>% 
+#   select(-taxon)
+# ANCOM.all_zeros = zeros_setup %>% left_join(tax.frame, by = "TAXON")
 ```
 
+## Pairwise by treatment
 I can also compare all three groups with each other to see a more thorough breakdown.
 
-```{r ANCOMBC treatment pairwise, warnings = FALSE, message = FALSE}
+```{r ANCOMBC treatment pairwise, warnings = FALSE, message = FALSE, echo = FALSE}
 set.seed(14)
-ANCOM.treatment <- ancombc2(data = XD.rare1,
-                           tax_level = NULL,
+ANCOM.treatment <- ancombc2(data = XD.complete,
+                           tax_level = "Phylum",
                            fix_formula = "treatment",
                            p_adj_method = "BH",
                            group = "treatment",
+                           struc_zero = TRUE,
                            verbose = TRUE,
                            pairwise = TRUE)
 
@@ -468,4 +702,12 @@ df_fig1 <- df_fig1 %>%
   arrange(BETA) %>%
   mutate(group = ifelse(BETA >0, "g1", "g2"))
 df_fig.TDT = df_fig1 %>% left_join(tax.frame, by = "TAXON")
+
+print("Control vs Thyroxine")
+df_fig.CT
+print("Control vs Delayed Thyroxine")
+df_fig.CDT
+print("Thyroxine vs Delayed Thyroxine")
+df_fig.TDT
 ```
+
