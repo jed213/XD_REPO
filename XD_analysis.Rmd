@@ -354,14 +354,14 @@ Now to fit the model: I am chooosing not to use tank as a random effect because 
 
 ```{r initial model}
 model <- lm(shannon ~ tank.id + dna.ng.ul.LOG + mass.g.LOG + treatment + 
-              body.condition + exposureYN + shannon + age.days.S + stage.S, 
+              body.condition + exposureYN + age.days.S + stage.S, 
              data = alpha.pairs.scaled)
 summary(model)
 ```
 I believe there is a problem including both tank and treatment because the treatments were given to specific tanks. I will remove the treatment variable and try again.
 ```{r initial model redo}
 model <- lm(shannon ~ tank.id + dna.ng.ul.LOG + mass.g.LOG + 
-              body.condition + exposureYN + shannon + age.days.S + stage.S, 
+              body.condition + exposureYN + age.days.S + stage.S, 
              data = alpha.pairs.scaled)
 summary(model)
 ```
@@ -487,15 +487,15 @@ Overall, the models with DNA included are a better fit, as expected by the previ
 
 ```{r model10.5 validation}
 # Residuals vs fitted values
-plot(residuals(model10.5, type="response") ~ model5$fitted.values)
+plot(residuals(model10.5, type="response") ~ model10.5$fitted.values)
 abline(0,0,col="gray")
 
 # Residuals vs Age
-plot(residuals(model10.5, type="response") ~ model5$model$age.days.S)
+plot(residuals(model10.5, type="response") ~ model10.5$model$age.days.S)
 abline(0,0,col="gray")
 
 # Residuals vs Stage
-plot(residuals(model10.5, type="response") ~ model5$model$stage.S)
+plot(residuals(model10.5, type="response") ~ model10.5$model$stage.S)
 abline(0,0,col="gray")
 ```
 
