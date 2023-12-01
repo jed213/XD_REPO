@@ -234,10 +234,34 @@ meta.complete %>%
 
 Body condition also doesn't seem to be changing depending on how long the animals have been exposed to thyroxine.  
 
-## Statistics: Which facors influence growth?
+## Statistics: Which facors influence development?
 
 Next, I want to assess whether thyroxine exposure influences the effect of age on determining tadpole developmental stage.
-[analysis to come soon]
+
+First, I will run the model using all thyroxine groups, subsetting from day 50 to end.
+
+```{r stage 3 groups, echo = FALSE}
+meta.complete.d50 <- meta.complete %>% 
+  filter(age.days >= 50)
+
+model <- lm(stage ~ age.days * treatment, 
+             data = meta.complete.d50)
+summary(model)
+```
+
+Nothing is really coming up as significant. It doesn't seem like age and treatment are driving what stage the tadpoles are at, at least after about day 50. On the age vs stage plot, the lines do seem to flatten out a bit at this point so that may make sense.
+
+Now, to do all timepoints but just for the control and thyroxine groups.
+
+```{r stage 2 groups, echo = FALSE}
+meta.complete.noDT <- meta.complete %>% 
+  filter(treatment != "Delayed Thyroxine")
+
+model <- lm(stage ~ age.days * treatment, 
+             data = meta.complete.noDT)
+summary(model)
+```
+Now that the samples prior to day 50 are included, age significantly predicts stage! The interaction between age and treatment group is also significant, indicating tadpoles with different treatments may have accelerated in stage at different rates.
 
 # Rarefaction
 
