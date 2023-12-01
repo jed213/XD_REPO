@@ -27,7 +27,7 @@ library(pairwiseAdonis)
 
 # set graphing options
 theme_set(theme_light())
-sc = scale_color_manual(values = c("black", "lightpink", "red"))
+sc = scale_color_manual(values = c("black", "darksalmon", "darkred"))
 ```
 
 ```{r functions, include=FALSE}
@@ -121,11 +121,11 @@ print(readcounts$per.removed)
 # print otu table for contaminants
 as.data.frame(otu_table(XD)) %>% slice(contams)
 ```
-I am happy with how this looks, the couple samples with higher % of reads removed had low read counts anyway. Last, I need to remove the frogs that were allowed to metamorphose.
+I am happy with how this looks, the couple samples with higher % of reads removed had low read counts anyway. Last, I need to remove frogs from the analysis (stage >= 66).
 
 ```{r phyloseq cleanup, include = FALSE}
 # remove samples that were allowed to metamorphose
-XD.clean <- subset_samples(XD.decontam, age.days <= 100)
+XD.clean <- subset_samples(XD.decontam, age.days <= 65)
 ```
 
 # Exploring Metadata
@@ -210,7 +210,7 @@ meta.complete %>%
   labs(x = "Age (days)", y = "Mass (g)")
 
 meta.complete %>% 
-  ggplot(aes(x = age.days, y = body.condition)) +
+  ggplot(aes(x = age.days, y = body.condition, shape=treatment)) +
   geom_point(size = 3, aes(color = treatment)) + sc +
   labs(x = "Age (days)", y = "Body condition")
 ```
@@ -234,9 +234,10 @@ meta.complete %>%
 
 Body condition also doesn't seem to be changing depending on how long the animals have been exposed to thyroxine.  
 
-## (TO-DO) Statistics: Is thyroxine stunting growth?
+## Statistics: Which facors influence growth?
 
-To test this, I could construct a model where mass is the response variable, and treatment/exposure and age are the predictor variables. This could tell me whether treatment/exposure has an effect on growth while controlling for the increase in age over time.
+Next, I want to assess whether thyroxine exposure influences the effect of age on determining tadpole developmental stage.
+[analysis to come soon]
 
 # Rarefaction
 
@@ -282,29 +283,29 @@ meta.rare %>%
 
 # by age
 meta.rare %>%
-  ggplot(aes(x=age.days, y=shannon)) + sc +
-  geom_point(aes(color = treatment), shape = 1, size = 3) +
+  ggplot(aes(x=age.days, y=shannon, shape=treatment)) + sc +
+  geom_point(aes(color = treatment), size = 3) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
 # by stage
 meta.rare %>%
-  ggplot(aes(x=stage, y=shannon)) + sc +
-  geom_point(aes(color = treatment), shape = 1, size = 3) +
+  ggplot(aes(x=stage, y=shannon, shape=treatment)) + sc +
+  geom_point(aes(color = treatment), size = 3) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
 # by days exposed
 meta.rare %>%
-  ggplot(aes(x=days.exposed, y=shannon)) + sc +
-  geom_point(aes(color = treatment), shape = 1, size = 3) +
+  ggplot(aes(x=days.exposed, y=shannon, shape=treatment)) + sc +
+  geom_point(aes(color = treatment), size = 3) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 
 # by mass
 meta.rare %>%
-  ggplot(aes(x=mass.g, y=shannon)) + sc +
-  geom_point(aes(color = treatment), shape = 1, size = 3) +
+  ggplot(aes(x=mass.g, y=shannon, shape=treatment)) + sc +
+  geom_point(aes(color = treatment), size = 3) +
   theme_classic(base_size = 15) +
   ylab("shannon diversity")
 ```
@@ -359,6 +360,7 @@ model <- lm(shannon ~ tank.id + dna.ng.ul.LOG + mass.g.LOG + treatment +
 summary(model)
 ```
 I believe there is a problem including both tank and treatment because the treatments were given to specific tanks. I will remove the treatment variable and try again.
+
 ```{r initial model redo}
 model <- lm(shannon ~ tank.id + dna.ng.ul.LOG + mass.g.LOG + 
               body.condition + exposureYN + age.days.S + stage.S, 
@@ -407,12 +409,14 @@ AIC(model8)
 AIC(model)
 ```
 The best model seems to be model 5, which makes sense given the very high significance of DNA concentration in the first model. I will try one more version of model 5 with an interaction term between age and stage.
+
 ```{r model 5}
 model5.2 <- lm(shannon ~ age.days.S * stage.S + dna.ng.ul.LOG, 
              data = alpha.pairs.scaled)
 AIC(model5.2)
 ```
 It looks like this was about the same so I will exclude the interaction term. Now model validation:  
+
 ```{r model validation}
 # Residuals vs fitted values
 plot(residuals(model5, type="response") ~ model5$fitted.values)
@@ -432,21 +436,17 @@ abline(0,0,col="gray")
 ```
 
 The residuals look fine to me. Can proceed with model interpretation.
+
 ```{r model results, echo = FALSE, warnings = FALSE, message = FALSE}
 summary(model5)
 
 # test significance of terms
 car::Anova(model5)
 ```
-DNA concentration was by far the biggest predictor of shannon diversity in these tadpoles, which limits our interpretation of what may be happening biologically. Both age and stage were also significant predictors, with stage explaining slightly more variation in shannon diversity.
+DNA concentration was by far the biggest predictor of shannon diversity in these tadpoles, which limits our interpretation of what may be happening biologically. Both age and stage were also significant predictors, with stage explaining slightly more variation in shannon diversity. However, DNA concentration is likely not interpretable in this experiment because these concentrations reflect ALL DNA that was isolated from the gut samples, including both microbiome and host DNA as well as non-microbial/non-host DNA like viruses, fungi, etc. Because DNA concentration may not be relevant as an interpretable biological variable, we will remove it as an explanatory variable and proceed with new models using the other variables.
 
-Trying more versions of the model with and without DNA included.  
-With DNA:  
-9.1. Shannon ~ Age + Stage + DNA + Mass  
-9.2. Shannon ~ Age + Stage + DNA + Treatment  
-9.3. Shannon ~ Age + Stage + DNA + Tank ID  
+Trying more versions of the model without DNA included.  
 
-Without DNA:  
 10.1. Shannon ~ Age + Stage + Mass + Body condition + ExposureYN + Tank ID  
 10.2. Shannon ~ Age + Stage + Mass + Body condition + Tank ID  
 10.3. Shannon ~ Age + Stage + Mass + Tank ID  
@@ -454,13 +454,6 @@ Without DNA:
 10.5. Shannon ~ Age * Stage  
 
 ```{r new models}
-model9.1 <- lm(shannon ~ age.days.S + stage.S + dna.ng.ul.LOG, + mass.g.LOG, 
-             data = alpha.pairs.scaled)
-model9.2 <- lm(shannon ~ age.days.S + stage.S + dna.ng.ul.LOG + treatment, 
-             data = alpha.pairs.scaled)
-model9.3 <- lm(shannon ~ age.days.S + stage.S + dna.ng.ul.LOG + tank.id, 
-             data = alpha.pairs.scaled)
-
 
 model10.1 <- lm(shannon ~ age.days.S + stage.S + mass.g.LOG + body.condition + exposureYN + tank.id, 
              data = alpha.pairs.scaled)
@@ -474,28 +467,32 @@ model10.5 <- lm(shannon ~ age.days.S * stage.S,
              data = alpha.pairs.scaled)
 
 # Find the AICs
-AIC(model9.1)
-AIC(model9.2)
-AIC(model9.3)
 AIC(model10.1)
 AIC(model10.2)
 AIC(model10.3)
 AIC(model10.4)
 AIC(model10.5)
 ```
-Overall, the models with DNA included are a better fit, as expected by the previous results. When DNA is not included, models 10.5, 1, 4, 6 and 6 are the next best fits. Two of these are just age and stage alone (with the best one having interaction term), and the other two are age/stage/mass and age/stage/bodycondition. I am going to dig deeper into the age/stage + interaction alone model, to see the relative weights of each variable in that model.  
+Overall, the models with DNA included are a better fit, as expected by the previous results. When DNA is not included, models 1, 6, 7, 10.5, and 4 are the next best fits. To recap what those were:  
+1. Shannon ~ Age + Stage  
+6. Shannon ~ Age + Stage + Body condition  
+7. Shannon ~ Age + Stage + ExposureYN 
+10.5. Shannon ~ Age * Stage 
+4. Shannon ~ Age + Stage + Mass 
+
+Two of these are just age and stage alone (with the best one having no interaction term), and the other three are age and stage plus one other variable. I am going to dig deeper into the age/stage alone model, to see the relative weights of each variable in that model.  
 
 ```{r model10.5 validation}
 # Residuals vs fitted values
-plot(residuals(model10.5, type="response") ~ model10.5$fitted.values)
+plot(residuals(model1, type="response") ~ model1$fitted.values)
 abline(0,0,col="gray")
 
 # Residuals vs Age
-plot(residuals(model10.5, type="response") ~ model10.5$model$age.days.S)
+plot(residuals(model1, type="response") ~ model1$model$age.days.S)
 abline(0,0,col="gray")
 
 # Residuals vs Stage
-plot(residuals(model10.5, type="response") ~ model10.5$model$stage.S)
+plot(residuals(model1, type="response") ~ model1$model$stage.S)
 abline(0,0,col="gray")
 ```
 
@@ -505,7 +502,7 @@ summary(model10.5)
 # test significance of terms
 car::Anova(model10.5)
 ```
-Interestingly, age is appearing as super significant while stage and even the interaction term are borderline non-significant. This aligns with the rest of the data that tends to show age having a greater effect than stage.
+Interestingly, age is appearing as super significant while stage is non-significant. This aligns with the rest of the data that tends to show age having a greater effect than stage.
 
 # Beta diversity
 
@@ -563,7 +560,7 @@ Using a PERMANOVA I should be able to see how various variables influence beta d
 adonis2(BrayDist ~ treatment + age.days + stage + tank.id, data = meta.rare)
 ```
 
-Everything is very significant, but the F-stat for age is WAY higher than any of the others, including the stat for stage. In fact, stage may have had less of an effect than treatment.
+Everything is very significant except stage, but the F-stat for age is WAY higher than any of the others.
 
 The other stat to add is to see how the treatment groups cluster using a pairwise adonis.
 ```{r pairwise Adonis, echo = FALSE}
@@ -593,7 +590,8 @@ plot(var3, digits = 2, Xnames = c("Age", "Stage", "Body Condition", "Treatment")
 plot(var4, digits = 2, Xnames = c("Age", "Stage", "Mass", "Days Exposed"), bg = c("yellow", "tomato", "lightblue", "lightgreen"))
 ```
 
-Age clearly dominates in terms of its individual contribution, and stage seems to contribute mainly through its correlation with age.  
+Age clearly dominates in terms of its individual contribution, and stage seems to contribute mainly through its correlation with age. 
+
 Treatment didn't have a strong individual effect which is good to see. Tank has a huge effect, which probably makes sense since those tadpoles will have the exact same bacterial exposures.
 
 # (TO-DO) Differential abundance
@@ -603,11 +601,11 @@ Treatment didn't have a strong individual effect which is good to see. Tank has 
 
 ## Exposed vs not exposed
 
-Now I want to see whether there is differential abundance of bacteria between tadpoles that have and haven't been exposed to thyroxine.  
+Now I want to see whether there is differential abundance of bacteria at the phylum level between tadpoles that have and haven't been exposed to thyroxine.  
 
 Earlier I made a new Y/N thyroxine exposure metadata category based on number of days exposed.
 
-```{r ANCOMBC exposure, warnings = FALSE, message = FALSE, echo = FALSE}
+```{r ANCOMBC exposure, warning = FALSE, message = FALSE, echo = FALSE}
 set.seed(14)
 ANCOM.exposure <- ancombc2(data = XD.complete,
                            tax_level = "Phylum",
@@ -650,7 +648,7 @@ df_fig.exposure
 ## Pairwise by treatment
 I can also compare all three groups with each other to see a more thorough breakdown.
 
-```{r ANCOMBC treatment pairwise, warnings = FALSE, message = FALSE, echo = FALSE}
+```{r ANCOMBC treatment pairwise, warning = FALSE, message = FALSE, echo = FALSE}
 set.seed(14)
 ANCOM.treatment <- ancombc2(data = XD.complete,
                            tax_level = "Phylum",
